@@ -36,13 +36,15 @@ The system follows the ReAct shape described in `instruction.md`, but anchors it
 
 - the workflow mapper generates graph-ready structures for the frontend,
 - the verifier builds PoC candidates and replay plans,
-- the proxy engine prepares requests for controlled execution.
+- the proxy engine prepares requests for controlled execution,
+- runtime events from the proxy, orchestrator, mapper, and verifier can mutate the persisted scan graph as the audit progresses.
 
 ### 5. Observe
 
 - verification results are recorded as evidence,
 - failed attempts refine future hypotheses,
-- successful exploit paths raise finding confidence.
+- successful exploit paths raise finding confidence,
+- persisted scan events can be streamed to the frontend over SSE for live workflow updates.
 
 ### 6. Explain
 

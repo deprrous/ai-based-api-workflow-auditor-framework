@@ -5,6 +5,9 @@ from api.services.store import audit_store
 
 
 class ScanService:
+    def ensure_seed_data(self) -> None:
+        audit_store.ensure_seed_data()
+
     def list_scans(self) -> list[ScanRunSummary]:
         return audit_store.list_scans()
 

@@ -1,8 +1,11 @@
 import { WorkflowScreen } from "@/features/workflow/workflow-screen";
 import { getFrameworkPrincipleGraph } from "@/lib/api";
+import type { ScanEvent } from "@/lib/types";
 import type { ScanRunSummary } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+const frameworkEvents: ScanEvent[] = [];
 
 const frameworkScanStub: ScanRunSummary = {
   id: "framework-principle",
@@ -20,5 +23,13 @@ const frameworkScanStub: ScanRunSummary = {
 export default async function FrameworkPrinciplePage() {
   const graph = await getFrameworkPrincipleGraph();
 
-  return <WorkflowScreen scan={frameworkScanStub} graph={graph} backHref="/" backLabel="Back to dashboard" />;
+  return (
+    <WorkflowScreen
+      initialScan={frameworkScanStub}
+      initialGraph={graph}
+      initialEvents={frameworkEvents}
+      backHref="/"
+      backLabel="Back to dashboard"
+    />
+  );
 }

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { WorkflowScreen } from "@/features/workflow/workflow-screen";
-import { getScan, getScanWorkflow } from "@/lib/api";
+import { getScan, getScanEvents, getScanWorkflow } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -15,9 +15,17 @@ export default async function WorkflowPage({ params }: WorkflowPageProps) {
   const { scanId } = await params;
 
   try {
-    const [scan, graph] = await Promise.all([getScan(scanId), getScanWorkflow(scanId)]);
+    const [scan, graph, events] = await Promise.all([getScan(scanId), getScanWorkflow(scanId), getScanEvents(scanId)]);
 
-    return <WorkflowScreen scan={scan} graph={graph} backHref="/" backLabel="Back to dashboard" />;
+    return (
+      <WorkflowScreen
+        initialScan={scan}
+        initialGraph={graph}
+        initialEvents={events}
+        backHref="/"
+        backLabel="Back to dashboard"
+      />
+    );
   } catch {
     notFound();
   }

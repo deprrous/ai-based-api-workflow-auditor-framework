@@ -2,17 +2,26 @@
 
 Next.js dashboard for the AI API Workflow Auditor.
 
+## Selected stack
+
+- Next.js 15 app router
+- React 19
+- TypeScript
+- React Flow for workflow visualization
+- Custom CSS design tokens and layouts
+- EventSource and SSE for live runtime updates
+
 ## Current pages
 
 - `/` - dashboard with live scan-run cards and framework-principle summary.
 - `/framework` - framework work-principle graph.
-- `/workflows/[scanId]` - persisted workflow graph for a specific scan run.
+- `/workflows/[scanId]` - persisted workflow graph and live runtime feed for a specific scan run.
 
 ## Key areas
 
 - `app/` - app router entrypoints and global styles.
 - `features/dashboard/` - dashboard screen composition.
-- `features/workflow/` - workflow graph screen composition.
+- `features/workflow/` - workflow graph screen composition and SSE-driven runtime feed.
 - `components/` - reusable workflow graph renderer.
 - `lib/` - API clients, formatters, and frontend types.
 
@@ -26,3 +35,5 @@ npm run dev
 ```
 
 The frontend expects the FastAPI backend to be available at `http://127.0.0.1:8000/api/v1` unless overridden by environment variables.
+
+Live scan pages open an `EventSource` connection to `/api/v1/scans/{scanId}/events/stream` so graph and event updates can appear without refreshing.

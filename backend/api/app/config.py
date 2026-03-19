@@ -25,6 +25,16 @@ def _read_csv(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
     return items or default
 
 
+def _read_float(value: str | None, default: float) -> float:
+    if value is None:
+        return default
+
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     app_name: str
@@ -33,6 +43,10 @@ class Settings:
     debug: bool
     api_prefix: str
     cors_origins: tuple[str, ...]
+    database_url: str
+    database_auto_create: bool
+    seed_data: bool
+    sse_poll_interval: float
 
 
 @lru_cache
@@ -47,4 +61,11 @@ def get_settings() -> Settings:
             os.getenv("AUDITOR_CORS_ORIGINS"),
             DEFAULT_CORS_ORIGINS,
         ),
+        database_url=os.getenv(
+            "AUDITOR_DATABASE_URL",
+            "postgresql+psycopg://auditor:auditor@127.0.0.1:5432/auditor",
+        ),
+        database_auto_create=_read_bool(os.getenv("AUDITOR_DATABASE_AUTO_CREATE"), default=True),
+        seed_data=_read_bool(os.getenv("AUDITOR_SEED_DATA"), default=True),
+        sse_poll_interval=_read_float(os.getenv("AUDITOR_SSE_POLL_INTERVAL"), default=1.0),
     )

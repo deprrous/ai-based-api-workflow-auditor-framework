@@ -86,13 +86,20 @@ The architecture preserves the four-pillar fusion model from `instruction.md`.
 
 ## Recommended platform dependencies
 
-These are architectural placeholders for self-hosting, not implemented services yet.
+These are the selected foundation technologies and near-term supporting services for self-hosting.
 
-- PostgreSQL for durable control-plane state.
+- Python 3.11+ with FastAPI and Pydantic for the control plane.
+- PostgreSQL with SQLAlchemy and psycopg for durable scan, graph, and event state.
+- Next.js, React, and TypeScript for the web client.
+- React Flow for workflow visualization.
+- Server-Sent Events for live scan updates.
+- Mitmproxy for traffic interception.
+
+## Planned supporting services
+
 - Object storage such as MinIO for captures, evidence, and artifacts.
 - Redis or a workflow engine for transient coordination and long-running tasks.
-- Mitmproxy for traffic interception.
-- React Flow for workflow visualization.
+- Provider adapters for OpenAI, Anthropic, and local OpenAI-compatible models.
 
 ## System qualities we optimize for
 
