@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from api.app.config import get_settings
+from api.routers import health, scans, workflows
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+
+    app = FastAPI(
+        title=settings.app_name,
+        version=settings.version,
+        summary="Control plane for workflow-driven API auditing.",
+        description=(
+            "Foundational FastAPI application for scan orchestration, workflow data, "
+            "and developer-facing audit results."
+        ),
+        docs_url=f"{settings.api_prefix}/docs",
+        redoc_url=f"{settings.api_prefix}/redoc",
+        openapi_url=f"{settings.api_prefix}/openapi.json",
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_origins),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/", tags=["system"], summary="Read API metadata")
+    async def read_root() -> dict[str, str]:
+        return {
+            "name": settings.app_name,
+            "environment": settings.environment,
+            "version": settings.version,
+            "api_prefix": settings.api_prefix,
+        }
+
+    app.include_router(health.router, prefix=settings.api_prefix)
+    app.include_router(scans.router, prefix=settings.api_prefix)
+    app.include_router(workflows.router, prefix=settings.api_prefix)
+
+    return app
+
+
+app = create_app()
