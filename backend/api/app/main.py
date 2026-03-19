@@ -1,16 +1,34 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.app.config import get_settings
+from api.app.database import init_database
 from api.routers import health, scans, workflows
+from api.services.scan_service import scan_service
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    settings = get_settings()
+
+    if settings.database_auto_create:
+        init_database()
+
+    if settings.seed_data:
+        scan_service.ensure_seed_data()
+
+    yield
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
+        lifespan=lifespan,
         title=settings.app_name,
         version=settings.version,
         summary="Control plane for workflow-driven API auditing.",

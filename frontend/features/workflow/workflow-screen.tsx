@@ -1,19 +1,96 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 
 import { WorkflowGraphView } from "@/components/workflow-graph";
-import { countNodeStates, formatDateTime, formatPhase, formatStatus } from "@/lib/format";
-import type { ScanRunSummary, WorkflowGraph } from "@/lib/types";
+import {
+  countNodeStates,
+  formatDateTime,
+  formatEventSource,
+  formatPhase,
+  formatSeverity,
+  formatStatus,
+} from "@/lib/format";
+import { publicApiBaseUrl } from "@/lib/runtime";
+import type { ScanEvent, ScanEventEnvelope, ScanRunSummary, ScanStreamSnapshot, WorkflowGraph } from "@/lib/types";
+
+type ConnectionState = "offline" | "connecting" | "live" | "reconnecting";
 
 interface WorkflowScreenProps {
-  scan: ScanRunSummary;
-  graph: WorkflowGraph;
+  initialScan: ScanRunSummary;
+  initialGraph: WorkflowGraph;
+  initialEvents: ScanEvent[];
   backHref: string;
   backLabel: string;
 }
 
-export function WorkflowScreen({ scan, graph, backHref, backLabel }: WorkflowScreenProps) {
-  const nodeCounts = countNodeStates(graph.nodes.map((node) => node.status));
-  const topPhases = Array.from(new Set(graph.nodes.map((node) => node.phase)));
+function isSnapshot(payload: unknown): payload is ScanStreamSnapshot {
+  return typeof payload === "object" && payload !== null && "graph" in payload && "scan" in payload && "events" in payload;
+}
+
+function isEnvelope(payload: unknown): payload is ScanEventEnvelope {
+  return typeof payload === "object" && payload !== null && "event" in payload && "graph" in payload && "scan" in payload;
+}
+
+export function WorkflowScreen({ initialScan, initialGraph, initialEvents, backHref, backLabel }: WorkflowScreenProps) {
+  const [scan, setScan] = useState(initialScan);
+  const [graph, setGraph] = useState(initialGraph);
+  const [events, setEvents] = useState(initialEvents);
+  const [connectionState, setConnectionState] = useState<ConnectionState>(
+    initialGraph.kind === "scan_run" ? "connecting" : "offline",
+  );
+
+  useEffect(() => {
+    if (initialGraph.kind !== "scan_run") {
+      return undefined;
+    }
+
+    const eventSource = new EventSource(`${publicApiBaseUrl}/scans/${initialScan.id}/events/stream`);
+
+    const handleSnapshot = (event: MessageEvent<string>) => {
+      const parsed = JSON.parse(event.data) as unknown;
+      if (!isSnapshot(parsed)) {
+        return;
+      }
+
+      setScan(parsed.scan);
+      setGraph(parsed.graph);
+      setEvents(parsed.events);
+      setConnectionState("live");
+    };
+
+    const handleUpdate = (event: MessageEvent<string>) => {
+      const parsed = JSON.parse(event.data) as unknown;
+      if (!isEnvelope(parsed)) {
+        return;
+      }
+
+      setScan(parsed.scan);
+      setGraph(parsed.graph);
+      setEvents((current) => [...current, parsed.event].slice(-30));
+      setConnectionState("live");
+    };
+
+    eventSource.addEventListener("snapshot", handleSnapshot as EventListener);
+    eventSource.addEventListener("scan.event", handleUpdate as EventListener);
+
+    eventSource.onopen = () => {
+      setConnectionState("live");
+    };
+
+    eventSource.onerror = () => {
+      setConnectionState("reconnecting");
+    };
+
+    return () => {
+      eventSource.close();
+      setConnectionState("offline");
+    };
+  }, [initialGraph.kind, initialScan.id]);
+
+  const nodeCounts = useMemo(() => countNodeStates(graph.nodes.map((node) => node.status)), [graph.nodes]);
+  const topPhases = useMemo(() => Array.from(new Set(graph.nodes.map((node) => node.phase))), [graph.nodes]);
 
   return (
     <main className="page page-grid">
@@ -42,6 +119,7 @@ export function WorkflowScreen({ scan, graph, backHref, backLabel }: WorkflowScr
               <span className={`badge badge--status-${scan.status}`}>{formatStatus(scan.status)}</span>
               <span className={`badge badge--risk-${scan.risk}`}>{formatStatus(scan.risk)} risk</span>
               <span className="badge">Stage: {formatPhase(scan.current_stage)}</span>
+              <span className={`badge badge--connection-${connectionState}`}>{formatPhase(connectionState)}</span>
             </div>
             <dl className="detail-list">
               <div>
@@ -99,35 +177,67 @@ export function WorkflowScreen({ scan, graph, backHref, backLabel }: WorkflowScr
         <aside className="legend-card">
           <div className="section-heading">
             <div>
-              <h2 className="section-title">Status Legend</h2>
-              <p className="section-copy">Use node states to quickly locate where the auditor found exploitable or risky behavior.</p>
+              <h2 className="section-title">Runtime Feed</h2>
+              <p className="section-copy">Proxy, orchestrator, and verifier events can now update the graph in real time through SSE.</p>
             </div>
           </div>
 
-          <div className="legend-grid">
-            <div className="legend-item">
-              <span className="legend-swatch legend-swatch--safe" />
-              <strong>Safe</strong>
-              <p className="muted-copy">Expected path with no active issue at the node.</p>
+          <div className="event-list">
+            {events.length === 0 ? (
+              <div className="legend-item">
+                <strong>No events yet</strong>
+                <p className="muted-copy">This view will fill as the scan emits runtime output.</p>
+              </div>
+            ) : (
+              events
+                .slice()
+                .reverse()
+                .map((event) => (
+                  <article className="event-card" key={event.id}>
+                    <div className="event-topline">
+                      <span className={`badge badge--severity-${event.severity}`}>{formatSeverity(event.severity)}</span>
+                      <span className="badge">{formatEventSource(event.source)}</span>
+                    </div>
+                    <strong>{event.message}</strong>
+                    <p className="muted-copy">{formatDateTime(event.created_at)} · {formatPhase(event.stage)} · {event.event_type}</p>
+                  </article>
+                ))
+            )}
+          </div>
+
+          <div className="panel panel-stack-gap">
+            <div className="section-heading">
+              <div>
+                <h2 className="section-title">Status Legend</h2>
+                <p className="section-copy">Use node states to quickly locate where the auditor found exploitable or risky behavior.</p>
+              </div>
             </div>
-            <div className="legend-item">
-              <span className="legend-swatch legend-swatch--active" />
-              <strong>Active</strong>
-              <p className="muted-copy">Currently used for correlation, replay, or graph assembly.</p>
-            </div>
-            <div className="legend-item">
-              <span className="legend-swatch legend-swatch--review" />
-              <strong>Review</strong>
-              <p className="muted-copy">Interesting path or action that still needs confirmation.</p>
-            </div>
-            <div className="legend-item">
-              <span className="legend-swatch legend-swatch--critical" />
-              <strong>Critical</strong>
-              <p className="muted-copy">Confirmed or strongly evidenced exploit path.</p>
+
+            <div className="legend-grid">
+              <div className="legend-item">
+                <span className="legend-swatch legend-swatch--safe" />
+                <strong>Safe</strong>
+                <p className="muted-copy">Expected path with no active issue at the node.</p>
+              </div>
+              <div className="legend-item">
+                <span className="legend-swatch legend-swatch--active" />
+                <strong>Active</strong>
+                <p className="muted-copy">Currently used for correlation, replay, or graph assembly.</p>
+              </div>
+              <div className="legend-item">
+                <span className="legend-swatch legend-swatch--review" />
+                <strong>Review</strong>
+                <p className="muted-copy">Interesting path or action that still needs confirmation.</p>
+              </div>
+              <div className="legend-item">
+                <span className="legend-swatch legend-swatch--critical" />
+                <strong>Critical</strong>
+                <p className="muted-copy">Confirmed or strongly evidenced exploit path.</p>
+              </div>
             </div>
           </div>
 
-          <div className="panel" style={{ marginTop: 18 }}>
+          <div className="panel panel-stack-gap">
             <div className="section-heading">
               <div>
                 <h2 className="section-title">Node State Counts</h2>
@@ -144,7 +254,7 @@ export function WorkflowScreen({ scan, graph, backHref, backLabel }: WorkflowScr
             </div>
           </div>
 
-          <div className="panel" style={{ marginTop: 18 }}>
+          <div className="panel panel-stack-gap">
             <div className="section-heading">
               <div>
                 <h2 className="section-title">Phase Coverage</h2>

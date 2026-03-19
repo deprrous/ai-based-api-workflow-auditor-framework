@@ -3,6 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from sqlalchemy import select
+
+from api.app.database import session_scope
+from api.app.db_models import ScanEventRecord, ScanRunRecord, WorkflowGraphRecord
+from api.schemas.events import (
+    EventSeverity,
+    EventSource,
+    IngestScanEventRequest,
+    ScanEvent,
+    ScanEventEnvelope,
+    ScanStreamSnapshot,
+    WorkflowEdgeReference,
+    WorkflowGraphUpdate,
+)
 from api.schemas.scans import ScanRisk, ScanRunSummary, ScanStatus, StartScanRequest
 from api.schemas.workflows import (
     WorkflowEdge,
@@ -13,6 +27,13 @@ from api.schemas.workflows import (
     WorkflowNodeStatus,
     WorkflowNodeType,
 )
+
+RISK_ORDER = {
+    ScanRisk.SAFE: 0,
+    ScanRisk.REVIEW: 1,
+    ScanRisk.HIGH: 2,
+    ScanRisk.CRITICAL: 3,
+}
 
 
 def _utc_now() -> datetime:
@@ -26,6 +47,89 @@ def _build_graph_stats(nodes: list[WorkflowNode], edges: list[WorkflowEdge], fla
         edge_count=len(edges),
         critical_nodes=critical_nodes,
         flagged_paths=flagged_paths,
+    )
+
+
+def _risk_from_severity(severity: EventSeverity) -> ScanRisk:
+    if severity == EventSeverity.CRITICAL:
+        return ScanRisk.CRITICAL
+    if severity == EventSeverity.HIGH:
+        return ScanRisk.HIGH
+    if severity == EventSeverity.WARNING:
+        return ScanRisk.REVIEW
+    return ScanRisk.SAFE
+
+
+def _merge_risk(current: ScanRisk, candidate: ScanRisk | None) -> ScanRisk:
+    if candidate is None:
+        return current
+
+    return candidate if RISK_ORDER[candidate] > RISK_ORDER[current] else current
+
+
+def _edge_key(edge: WorkflowEdge | WorkflowEdgeReference) -> tuple[str, str, str]:
+    return (edge.source, edge.target, edge.label or "")
+
+
+def _serialize_nodes(nodes: list[WorkflowNode]) -> list[dict[str, object]]:
+    return [node.model_dump(mode="json") for node in nodes]
+
+
+def _serialize_edges(edges: list[WorkflowEdge]) -> list[dict[str, object]]:
+    return [edge.model_dump(mode="json") for edge in edges]
+
+
+def _deserialize_nodes(raw_nodes: list[dict[str, object]]) -> list[WorkflowNode]:
+    return [WorkflowNode.model_validate(node) for node in raw_nodes]
+
+
+def _deserialize_edges(raw_edges: list[dict[str, object]]) -> list[WorkflowEdge]:
+    return [WorkflowEdge.model_validate(edge) for edge in raw_edges]
+
+
+def _scan_record_to_model(record: ScanRunRecord) -> ScanRunSummary:
+    return ScanRunSummary(
+        id=record.id,
+        name=record.name,
+        status=ScanStatus(record.status),
+        target=record.target,
+        created_at=record.created_at,
+        current_stage=record.current_stage,
+        findings_count=record.findings_count,
+        flagged_paths=record.flagged_paths,
+        risk=ScanRisk(record.risk),
+        workflow_id=record.workflow_id,
+    )
+
+
+def _graph_record_to_model(record: WorkflowGraphRecord) -> WorkflowGraph:
+    nodes = _deserialize_nodes(record.nodes_json)
+    edges = _deserialize_edges(record.edges_json)
+
+    return WorkflowGraph(
+        id=record.id,
+        kind=WorkflowGraphKind(record.kind),
+        scan_id=record.scan_id,
+        title=record.title,
+        description=record.description,
+        updated_at=record.updated_at,
+        stats=_build_graph_stats(nodes, edges, flagged_paths=record.flagged_paths),
+        nodes=nodes,
+        edges=edges,
+    )
+
+
+def _event_record_to_model(record: ScanEventRecord) -> ScanEvent:
+    return ScanEvent(
+        id=record.id,
+        scan_id=record.scan_id,
+        source=EventSource(record.source),
+        event_type=record.event_type,
+        stage=record.stage,
+        severity=EventSeverity(record.severity),
+        message=record.message,
+        payload=record.payload_json,
+        created_at=record.created_at,
     )
 
 
@@ -202,75 +306,363 @@ def _build_queued_scan_graph(scan_id: str, name: str, target: str | None) -> Wor
     )
 
 
-class AuditStore:
-    def __init__(self) -> None:
-        self._framework_principle = _build_framework_principle_graph()
-        self._scans: dict[str, ScanRunSummary] = {}
-        self._scan_workflows: dict[str, WorkflowGraph] = {}
-        self._seed()
+def _persist_graph(record: WorkflowGraphRecord, graph: WorkflowGraph) -> None:
+    record.kind = graph.kind.value
+    record.scan_id = graph.scan_id
+    record.title = graph.title
+    record.description = graph.description
+    record.flagged_paths = graph.stats.flagged_paths
+    record.nodes_json = _serialize_nodes(graph.nodes)
+    record.edges_json = _serialize_edges(graph.edges)
+    record.updated_at = graph.updated_at
 
-    def _seed(self) -> None:
-        bootstrap_scan = ScanRunSummary(
-            id="bootstrap-scan",
-            name="Tenant Billing Workflow Audit",
-            status=ScanStatus.COMPLETED,
-            target="staging",
-            created_at=datetime(2026, 3, 19, 0, 0, tzinfo=timezone.utc),
-            current_stage="reporting",
-            findings_count=3,
-            flagged_paths=2,
-            risk=ScanRisk.CRITICAL,
-            workflow_id="workflow-bootstrap-scan",
-        )
-        partner_scan = ScanRunSummary(
-            id="partner-boundary-scan",
-            name="Partner Project Boundary Audit",
-            status=ScanStatus.RUNNING,
-            target="qa",
-            created_at=datetime(2026, 3, 19, 1, 30, tzinfo=timezone.utc),
-            current_stage="observation",
-            findings_count=1,
-            flagged_paths=2,
-            risk=ScanRisk.HIGH,
-            workflow_id="workflow-partner-boundary-scan",
-        )
-        self._scans[bootstrap_scan.id] = bootstrap_scan
-        self._scans[partner_scan.id] = partner_scan
-        self._scan_workflows[bootstrap_scan.id] = _build_billing_scan_graph(bootstrap_scan.id)
-        self._scan_workflows[partner_scan.id] = _build_partner_scan_graph(partner_scan.id)
+
+def _apply_graph_update(graph: WorkflowGraph, update: WorkflowGraphUpdate | None, flagged_paths: int) -> WorkflowGraph:
+    if update is None:
+        graph.updated_at = _utc_now()
+        graph.stats = _build_graph_stats(graph.nodes, graph.edges, flagged_paths)
+        return graph
+
+    nodes_by_id = {node.id: node for node in graph.nodes}
+
+    for node_id in update.remove_node_ids:
+        nodes_by_id.pop(node_id, None)
+
+    for node in update.upsert_nodes:
+        nodes_by_id[node.id] = node
+
+    remove_edge_keys = {_edge_key(edge) for edge in update.remove_edges}
+    edge_map: dict[tuple[str, str, str], WorkflowEdge] = {}
+
+    for edge in graph.edges:
+        key = _edge_key(edge)
+        if key in remove_edge_keys:
+            continue
+        if edge.source in nodes_by_id and edge.target in nodes_by_id:
+            edge_map[key] = edge
+
+    for edge in update.upsert_edges:
+        if edge.source in nodes_by_id and edge.target in nodes_by_id:
+            edge_map[_edge_key(edge)] = edge
+
+    graph.nodes = list(nodes_by_id.values())
+    graph.edges = list(edge_map.values())
+
+    if update.title is not None:
+        graph.title = update.title
+    if update.description is not None:
+        graph.description = update.description
+
+    graph.updated_at = _utc_now()
+    graph.stats = _build_graph_stats(graph.nodes, graph.edges, flagged_paths)
+    return graph
+
+
+def _create_event_record(scan_id: str, source: EventSource, event_type: str, stage: str, severity: EventSeverity, message: str, payload: dict[str, object] | None = None, created_at: datetime | None = None) -> ScanEventRecord:
+    return ScanEventRecord(
+        scan_id=scan_id,
+        source=source.value,
+        event_type=event_type,
+        stage=stage,
+        severity=severity.value,
+        message=message,
+        payload_json=payload,
+        created_at=created_at or _utc_now(),
+    )
+
+
+class AuditStore:
+    def ensure_seed_data(self) -> None:
+        with session_scope() as session:
+            framework_exists = session.scalar(
+                select(WorkflowGraphRecord).where(WorkflowGraphRecord.kind == WorkflowGraphKind.FRAMEWORK_PRINCIPLE.value)
+            )
+            if framework_exists is None:
+                framework_graph = _build_framework_principle_graph()
+                framework_record = WorkflowGraphRecord(
+                    id=framework_graph.id,
+                    kind=framework_graph.kind.value,
+                    scan_id=None,
+                    title=framework_graph.title,
+                    description=framework_graph.description,
+                    flagged_paths=framework_graph.stats.flagged_paths,
+                    nodes_json=_serialize_nodes(framework_graph.nodes),
+                    edges_json=_serialize_edges(framework_graph.edges),
+                    updated_at=framework_graph.updated_at,
+                )
+                session.add(framework_record)
+
+            scan_exists = session.scalar(select(ScanRunRecord.id).limit(1))
+            if scan_exists is not None:
+                return
+
+            bootstrap_scan = ScanRunRecord(
+                id="bootstrap-scan",
+                name="Tenant Billing Workflow Audit",
+                status=ScanStatus.COMPLETED.value,
+                target="staging",
+                created_at=datetime(2026, 3, 19, 0, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 3, 19, 0, 25, tzinfo=timezone.utc),
+                current_stage="reporting",
+                findings_count=3,
+                flagged_paths=2,
+                risk=ScanRisk.CRITICAL.value,
+                workflow_id="workflow-bootstrap-scan",
+                notes="Seeded sample showing target-derived tenant isolation abuse.",
+            )
+            bootstrap_graph = _build_billing_scan_graph(bootstrap_scan.id)
+            bootstrap_record = WorkflowGraphRecord(
+                id=bootstrap_graph.id,
+                kind=bootstrap_graph.kind.value,
+                scan_id=bootstrap_scan.id,
+                title=bootstrap_graph.title,
+                description=bootstrap_graph.description,
+                flagged_paths=bootstrap_graph.stats.flagged_paths,
+                nodes_json=_serialize_nodes(bootstrap_graph.nodes),
+                edges_json=_serialize_edges(bootstrap_graph.edges),
+                updated_at=bootstrap_graph.updated_at,
+            )
+
+            partner_scan = ScanRunRecord(
+                id="partner-boundary-scan",
+                name="Partner Project Boundary Audit",
+                status=ScanStatus.RUNNING.value,
+                target="qa",
+                created_at=datetime(2026, 3, 19, 1, 30, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 3, 19, 1, 46, tzinfo=timezone.utc),
+                current_stage="observation",
+                findings_count=1,
+                flagged_paths=2,
+                risk=ScanRisk.HIGH.value,
+                workflow_id="workflow-partner-boundary-scan",
+                notes="Seeded sample showing a role boundary review in progress.",
+            )
+            partner_graph = _build_partner_scan_graph(partner_scan.id)
+            partner_record = WorkflowGraphRecord(
+                id=partner_graph.id,
+                kind=partner_graph.kind.value,
+                scan_id=partner_scan.id,
+                title=partner_graph.title,
+                description=partner_graph.description,
+                flagged_paths=partner_graph.stats.flagged_paths,
+                nodes_json=_serialize_nodes(partner_graph.nodes),
+                edges_json=_serialize_edges(partner_graph.edges),
+                updated_at=partner_graph.updated_at,
+            )
+
+            session.add_all([bootstrap_scan, bootstrap_record, partner_scan, partner_record])
+            session.add_all(
+                [
+                    _create_event_record(
+                        bootstrap_scan.id,
+                        EventSource.PROXY,
+                        "traffic_capture_completed",
+                        "ingestion",
+                        EventSeverity.INFO,
+                        "Captured owner billing workflow from staging traffic.",
+                        {"endpoint_count": 4, "actor": "owner"},
+                        created_at=datetime(2026, 3, 19, 0, 3, tzinfo=timezone.utc),
+                    ),
+                    _create_event_record(
+                        bootstrap_scan.id,
+                        EventSource.ORCHESTRATOR,
+                        "workflow_hypothesis_generated",
+                        "reasoning",
+                        EventSeverity.WARNING,
+                        "Direct invoice object lookups may bypass tenant ownership checks.",
+                        {"focus_node": "invoice-detail"},
+                        created_at=datetime(2026, 3, 19, 0, 11, tzinfo=timezone.utc),
+                    ),
+                    _create_event_record(
+                        bootstrap_scan.id,
+                        EventSource.VERIFIER,
+                        "finding_confirmed",
+                        "reporting",
+                        EventSeverity.CRITICAL,
+                        "Verifier replay confirmed cross-tenant invoice access through direct object references.",
+                        {"focus_node": "finding", "finding_type": "bola"},
+                        created_at=datetime(2026, 3, 19, 0, 24, tzinfo=timezone.utc),
+                    ),
+                    _create_event_record(
+                        partner_scan.id,
+                        EventSource.PROXY,
+                        "partner_flow_ingested",
+                        "ingestion",
+                        EventSeverity.INFO,
+                        "Partner portal invitation and key-management flow captured for review.",
+                        {"focus_node": "projects"},
+                        created_at=datetime(2026, 3, 19, 1, 32, tzinfo=timezone.utc),
+                    ),
+                    _create_event_record(
+                        partner_scan.id,
+                        EventSource.WORKFLOW_MAPPER,
+                        "boundary_path_discovered",
+                        "verification",
+                        EventSeverity.WARNING,
+                        "Workflow mapper found a candidate privilege-escalation path from project member invite to key read.",
+                        {"focus_node": "keys"},
+                        created_at=datetime(2026, 3, 19, 1, 38, tzinfo=timezone.utc),
+                    ),
+                ]
+            )
 
     def list_scans(self) -> list[ScanRunSummary]:
-        return [scan.model_copy(deep=True) for scan in sorted(self._scans.values(), key=lambda item: item.created_at, reverse=True)]
+        with session_scope() as session:
+            records = session.scalars(select(ScanRunRecord).order_by(ScanRunRecord.created_at.desc())).all()
+            return [_scan_record_to_model(record) for record in records]
 
     def get_scan(self, scan_id: str) -> ScanRunSummary | None:
-        scan = self._scans.get(scan_id)
-        return scan.model_copy(deep=True) if scan else None
+        with session_scope() as session:
+            record = session.get(ScanRunRecord, scan_id)
+            return _scan_record_to_model(record) if record else None
 
     def start_scan(self, payload: StartScanRequest) -> ScanRunSummary:
         scan_id = f"scan-{uuid4().hex[:8]}"
         workflow_id = f"workflow-{scan_id}"
-        scan = ScanRunSummary(
-            id=scan_id,
-            name=payload.name,
-            status=ScanStatus.QUEUED,
-            target=payload.target,
-            created_at=_utc_now(),
-            current_stage="ingestion",
-            findings_count=0,
-            flagged_paths=0,
-            risk=ScanRisk.REVIEW,
-            workflow_id=workflow_id,
-        )
-        self._scans[scan_id] = scan
-        self._scan_workflows[scan_id] = _build_queued_scan_graph(scan_id, payload.name, payload.target)
-        return scan.model_copy(deep=True)
+        now = _utc_now()
+        graph = _build_queued_scan_graph(scan_id, payload.name, payload.target)
+        graph.updated_at = now
+
+        with session_scope() as session:
+            scan_record = ScanRunRecord(
+                id=scan_id,
+                name=payload.name,
+                status=ScanStatus.QUEUED.value,
+                target=payload.target,
+                created_at=now,
+                updated_at=now,
+                current_stage="ingestion",
+                findings_count=0,
+                flagged_paths=0,
+                risk=ScanRisk.REVIEW.value,
+                workflow_id=workflow_id,
+                notes=payload.notes,
+            )
+            graph_record = WorkflowGraphRecord(
+                id=workflow_id,
+                kind=graph.kind.value,
+                scan_id=scan_id,
+                title=graph.title,
+                description=graph.description,
+                flagged_paths=graph.stats.flagged_paths,
+                nodes_json=_serialize_nodes(graph.nodes),
+                edges_json=_serialize_edges(graph.edges),
+                updated_at=graph.updated_at,
+            )
+            session.add_all([scan_record, graph_record])
+            session.add(
+                _create_event_record(
+                    scan_id,
+                    EventSource.SYSTEM,
+                    "scan_created",
+                    "ingestion",
+                    EventSeverity.INFO,
+                    "Scan created and queued for initial ingestion.",
+                    {"target": payload.target, "workflow_id": workflow_id},
+                )
+            )
+            session.flush()
+            session.refresh(scan_record)
+            return _scan_record_to_model(scan_record)
 
     def get_scan_workflow(self, scan_id: str) -> WorkflowGraph | None:
-        graph = self._scan_workflows.get(scan_id)
-        return graph.model_copy(deep=True) if graph else None
+        with session_scope() as session:
+            record = session.scalar(select(WorkflowGraphRecord).where(WorkflowGraphRecord.scan_id == scan_id))
+            return _graph_record_to_model(record) if record else None
 
-    def get_framework_principle(self) -> WorkflowGraph:
-        return self._framework_principle.model_copy(deep=True)
+    def get_framework_principle(self) -> WorkflowGraph | None:
+        with session_scope() as session:
+            record = session.scalar(
+                select(WorkflowGraphRecord).where(WorkflowGraphRecord.kind == WorkflowGraphKind.FRAMEWORK_PRINCIPLE.value)
+            )
+            return _graph_record_to_model(record) if record else None
+
+    def list_scan_events(self, scan_id: str, *, after_id: int | None = None, limit: int = 40) -> list[ScanEvent]:
+        with session_scope() as session:
+            query = select(ScanEventRecord).where(ScanEventRecord.scan_id == scan_id)
+            if after_id is not None:
+                query = query.where(ScanEventRecord.id > after_id)
+
+            records = session.scalars(query.order_by(ScanEventRecord.id.asc()).limit(limit)).all()
+            return [_event_record_to_model(record) for record in records]
+
+    def get_runtime_snapshot(self, scan_id: str, *, event_limit: int = 25) -> ScanStreamSnapshot | None:
+        with session_scope() as session:
+            scan_record = session.get(ScanRunRecord, scan_id)
+            graph_record = session.scalar(select(WorkflowGraphRecord).where(WorkflowGraphRecord.scan_id == scan_id))
+
+            if scan_record is None or graph_record is None:
+                return None
+
+            event_records = session.scalars(
+                select(ScanEventRecord)
+                .where(ScanEventRecord.scan_id == scan_id)
+                .order_by(ScanEventRecord.id.desc())
+                .limit(event_limit)
+            ).all()
+            events = [_event_record_to_model(record) for record in reversed(event_records)]
+            return ScanStreamSnapshot(
+                scan=_scan_record_to_model(scan_record),
+                graph=_graph_record_to_model(graph_record),
+                events=events,
+            )
+
+    def ingest_scan_event(self, scan_id: str, payload: IngestScanEventRequest) -> ScanEventEnvelope | None:
+        with session_scope() as session:
+            scan_record = session.get(ScanRunRecord, scan_id)
+            graph_record = session.scalar(select(WorkflowGraphRecord).where(WorkflowGraphRecord.scan_id == scan_id))
+
+            if scan_record is None or graph_record is None:
+                return None
+
+            now = _utc_now()
+
+            if payload.current_stage is not None:
+                scan_record.current_stage = payload.current_stage
+            else:
+                scan_record.current_stage = payload.stage
+
+            if payload.scan_status is not None:
+                scan_record.status = payload.scan_status.value
+            elif scan_record.status == ScanStatus.QUEUED.value and payload.source != EventSource.SYSTEM:
+                scan_record.status = ScanStatus.RUNNING.value
+
+            if payload.findings_increment != 0:
+                scan_record.findings_count = max(0, scan_record.findings_count + payload.findings_increment)
+
+            if payload.flagged_paths_increment != 0:
+                scan_record.flagged_paths = max(0, scan_record.flagged_paths + payload.flagged_paths_increment)
+
+            merged_risk = _merge_risk(
+                ScanRisk(scan_record.risk),
+                payload.risk or _risk_from_severity(payload.severity),
+            )
+            scan_record.risk = merged_risk.value
+            scan_record.updated_at = now
+
+            graph = _graph_record_to_model(graph_record)
+            graph = _apply_graph_update(graph, payload.graph_update, scan_record.flagged_paths)
+            _persist_graph(graph_record, graph)
+
+            event_record = _create_event_record(
+                scan_id,
+                payload.source,
+                payload.event_type,
+                payload.stage,
+                payload.severity,
+                payload.message,
+                payload.payload,
+                created_at=now,
+            )
+            session.add(event_record)
+            session.flush()
+            session.refresh(event_record)
+
+            return ScanEventEnvelope(
+                event=_event_record_to_model(event_record),
+                scan=_scan_record_to_model(scan_record),
+                graph=_graph_record_to_model(graph_record),
+            )
 
 
 audit_store = AuditStore()

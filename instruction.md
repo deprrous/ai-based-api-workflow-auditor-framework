@@ -5,9 +5,10 @@ We are building an autonomous "Agentic AI" cybersecurity platform that audits AP
 Crucially, the system must include a **User-Friendly Web Client** designed for "non-security guys" (developers, product managers). It must visually map the API workflows and explain vulnerabilities in plain English with actionable, copy-paste code fixes, bridging the gap between deep cybersecurity logic and everyday software development.
 
 ## 2. Tech Stack & Infrastructure
-* **Backend & AI Engine:** Python, FastAPI, LLM Integration (OpenAI/Anthropic via LangChain/custom ReAct loop).
-* **Traffic Capture:** MITM Proxy engine to capture live HTTP traffic.
-* **Frontend (Web Client):** React.js (or Next.js), Tailwind CSS for styling, and a visualization library like **React Flow** or **D3.js** for drawing the API workflow graphs.
+* **Backend & AI Engine:** Python, FastAPI, Pydantic, SQLAlchemy, PostgreSQL, and a custom provider-neutral ReAct loop for LLM orchestration.
+* **Traffic Capture:** `mitmproxy` for live HTTP traffic capture and replay preparation.
+* **Frontend (Web Client):** Next.js, React, TypeScript, and **React Flow** for workflow visualization.
+* **Styling & Realtime:** Custom CSS design system for the dashboard and SSE for live scan updates.
 
 ## 3. Data Ingestion Layer (The 4 Pillars)
 The AI Orchestrator requires "Data Fusion" from 4 sources:

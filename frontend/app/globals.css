@@ -158,6 +158,10 @@ select {
   padding: 22px;
 }
 
+.panel-stack-gap {
+  margin-top: 18px;
+}
+
 .panel-heading,
 .section-heading {
   display: flex;
@@ -312,24 +316,40 @@ select {
 
 .badge--status-completed,
 .badge--risk-safe,
-.badge--node-safe {
+.badge--node-safe,
+.badge--severity-info,
+.badge--connection-live {
   background: var(--safe-soft);
   color: var(--safe);
 }
 
 .badge--risk-high,
-.badge--node-high {
+.badge--node-high,
+.badge--severity-high {
   background: rgba(180, 92, 29, 0.16);
   color: #9f5612;
 }
 
 .badge--risk-critical,
-.badge--node-critical {
+.badge--node-critical,
+.badge--severity-critical {
   background: var(--critical-soft);
   color: var(--critical);
 }
 
 .badge--node-idle {
+  background: rgba(77, 94, 87, 0.1);
+  color: #4d5e57;
+}
+
+.badge--severity-warning,
+.badge--connection-reconnecting,
+.badge--connection-connecting {
+  background: var(--warning-soft);
+  color: #925711;
+}
+
+.badge--connection-offline {
   background: rgba(77, 94, 87, 0.1);
   color: #4d5e57;
 }
@@ -360,6 +380,26 @@ select {
 
 .legend-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.event-list {
+  display: grid;
+  gap: 12px;
+}
+
+.event-card {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.8);
+  display: grid;
+  gap: 10px;
+}
+
+.event-topline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .legend-item {
