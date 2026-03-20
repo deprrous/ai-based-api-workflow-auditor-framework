@@ -14,9 +14,23 @@ Architecture-first repository for an agentic AI API auditing framework focused o
 - `GET /api/v1/scans/{scan_id}`
 - `GET /api/v1/scans/{scan_id}/events`
 - `GET /api/v1/scans/{scan_id}/events/stream`
+- `GET /api/v1/scans/{scan_id}/findings`
+- `GET /api/v1/scans/{scan_id}/report`
+- `GET /api/v1/scans/{scan_id}/evidence-bundle`
+- `GET /api/v1/scans/{scan_id}/verifier-runs`
+- `GET /api/v1/scans/{scan_id}/verifier-jobs`
+- `POST /api/v1/scans/{scan_id}/planner/run`
 - `POST /api/v1/scans/{scan_id}/events`
 - `GET /api/v1/scans/{scan_id}/workflow`
 - `POST /api/v1/scans`
+- `GET /api/v1/contracts/runtime-ingest`
+- `GET /api/v1/findings`
+- `GET /api/v1/findings/{finding_id}`
+- `GET /api/v1/verifier-jobs/{verifier_job_id}`
+- `POST /api/v1/verifier-jobs/claim`
+- `GET /api/v1/verifier-runs/{verifier_run_id}`
+- `GET /api/v1/service-accounts`
+- `POST /api/v1/service-accounts`
 - `GET /api/v1/workflows/framework-principle`
 
 ## Key docs
@@ -67,6 +81,7 @@ cp backend/.env.example backend/.env
 
 ```bash
 source .venv/bin/activate
+alembic -c backend/alembic.ini upgrade head
 uvicorn api.app.main:app --reload --app-dir backend --env-file backend/.env
 ```
 

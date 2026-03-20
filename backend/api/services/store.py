@@ -1,23 +1,42 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from api.app.database import session_scope
-from api.app.db_models import ScanEventRecord, ScanRunRecord, WorkflowGraphRecord
+from api.app.db_models import FindingRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
+from api.repositories.event_repository import EventRepository
+from api.repositories.finding_repository import FindingRepository
+from api.repositories.scan_repository import ScanRepository
+from api.repositories.verifier_job_repository import VerifierJobRepository
+from api.repositories.verifier_run_repository import VerifierRunRepository
+from api.repositories.workflow_repository import WorkflowRepository
 from api.schemas.events import (
     EventSeverity,
     EventSource,
     IngestScanEventRequest,
+    RecordScanEventRequest,
     ScanEvent,
     ScanEventEnvelope,
     ScanStreamSnapshot,
     WorkflowEdgeReference,
     WorkflowGraphUpdate,
 )
+from api.schemas.findings import ContextReference, FindingDetail, FindingEvidence, FindingSeverity, FindingStatus, FindingSummary, FindingUpsert
+from api.schemas.producer_contracts import VerifierFindingConfirmedContract, WorkflowMapperPathFlaggedContract
 from api.schemas.scans import ScanRisk, ScanRunSummary, ScanStatus, StartScanRequest
+from api.schemas.verifier_jobs import (
+    ClaimVerifierJobRequest,
+    CompleteVerifierJobRequest,
+    FailVerifierJobRequest,
+    VerifierJobDetail,
+    VerifierJobPayload,
+    VerifierJobStatus,
+    VerifierJobSummary,
+)
+from api.schemas.verifier_runs import VerifierRunDetail, VerifierRunStatus, VerifierRunSummary
 from api.schemas.workflows import (
     WorkflowEdge,
     WorkflowGraph,
@@ -58,6 +77,14 @@ def _risk_from_severity(severity: EventSeverity) -> ScanRisk:
     if severity == EventSeverity.WARNING:
         return ScanRisk.REVIEW
     return ScanRisk.SAFE
+
+
+def _risk_from_finding_severity(severity: FindingSeverity) -> ScanRisk:
+    if severity == FindingSeverity.CRITICAL:
+        return ScanRisk.CRITICAL
+    if severity == FindingSeverity.HIGH:
+        return ScanRisk.HIGH
+    return ScanRisk.REVIEW
 
 
 def _merge_risk(current: ScanRisk, candidate: ScanRisk | None) -> ScanRisk:
@@ -131,6 +158,117 @@ def _event_record_to_model(record: ScanEventRecord) -> ScanEvent:
         payload=record.payload_json,
         created_at=record.created_at,
     )
+
+
+def _finding_record_to_summary(record: FindingRecord) -> FindingSummary:
+    evidence = [FindingEvidence.model_validate(item) for item in record.evidence_json]
+    context_references = [ContextReference.model_validate(item) for item in record.context_references_json]
+    return FindingSummary(
+        id=record.id,
+        scan_id=record.scan_id,
+        title=record.title,
+        category=record.category,
+        severity=FindingSeverity(record.severity),
+        status=FindingStatus(record.status),
+        confidence=record.confidence,
+        endpoint=record.endpoint,
+        actor=record.actor,
+        impact_summary=record.impact_summary,
+        remediation_summary=record.remediation_summary,
+        evidence_count=len(evidence),
+        context_reference_count=len(context_references),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _finding_record_to_detail(record: FindingRecord) -> FindingDetail:
+    evidence = [FindingEvidence.model_validate(item) for item in record.evidence_json]
+    context_references = [ContextReference.model_validate(item) for item in record.context_references_json]
+    summary = _finding_record_to_summary(record)
+    return FindingDetail(
+        **summary.model_dump(),
+        description=record.description,
+        impact=record.impact,
+        remediation=record.remediation,
+        evidence=evidence,
+        context_references=context_references,
+        workflow_node_ids=list(record.workflow_node_ids_json),
+        tags=list(record.tags_json),
+    )
+
+
+def _verifier_run_record_to_summary(record: VerifierRunRecord) -> VerifierRunSummary:
+    evidence = [FindingEvidence.model_validate(item) for item in record.evidence_json]
+    context_references = [ContextReference.model_validate(item) for item in record.context_references_json]
+    return VerifierRunSummary(
+        id=record.id,
+        scan_id=record.scan_id,
+        finding_id=record.finding_id,
+        status=VerifierRunStatus(record.status),
+        category=record.category,
+        severity=FindingSeverity(record.severity),
+        confidence=record.confidence,
+        title=record.title,
+        endpoint=record.endpoint,
+        actor=record.actor,
+        request_fingerprint=record.request_fingerprint,
+        response_status_code=record.response_status_code,
+        evidence_count=len(evidence),
+        context_reference_count=len(context_references),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _verifier_run_record_to_detail(record: VerifierRunRecord) -> VerifierRunDetail:
+    evidence = [FindingEvidence.model_validate(item) for item in record.evidence_json]
+    context_references = [ContextReference.model_validate(item) for item in record.context_references_json]
+    summary = _verifier_run_record_to_summary(record)
+    return VerifierRunDetail(
+        **summary.model_dump(),
+        request_summary=record.request_summary,
+        evidence=evidence,
+        context_references=context_references,
+        workflow_node_ids=list(record.workflow_node_ids_json),
+    )
+
+
+def _verifier_job_record_to_summary(record: VerifierJobRecord) -> VerifierJobSummary:
+    return VerifierJobSummary(
+        id=record.id,
+        scan_id=record.scan_id,
+        source_path_id=record.source_path_id,
+        title=record.title,
+        severity=FindingSeverity(record.severity),
+        status=VerifierJobStatus(record.status),
+        attempt_count=record.attempt_count,
+        max_attempts=record.max_attempts,
+        available_at=record.available_at,
+        claimed_at=record.claimed_at,
+        completed_at=record.completed_at,
+        worker_id=record.worker_id,
+        verifier_run_id=record.verifier_run_id,
+        finding_id=record.finding_id,
+        last_error=record.last_error,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _verifier_job_record_to_detail(record: VerifierJobRecord) -> VerifierJobDetail:
+    summary = _verifier_job_record_to_summary(record)
+    payload = VerifierJobPayload.model_validate(record.payload_json)
+    return VerifierJobDetail(**summary.model_dump(), rationale=record.rationale, payload=payload)
+
+
+def _severity_priority(severity: str) -> int:
+    order = {
+        FindingSeverity.CRITICAL.value: 0,
+        FindingSeverity.HIGH.value: 1,
+        FindingSeverity.REVIEW.value: 2,
+    }
+    return order.get(severity, 99)
 
 
 def _framework_nodes() -> list[WorkflowNode]:
@@ -306,6 +444,244 @@ def _build_queued_scan_graph(scan_id: str, name: str, target: str | None) -> Wor
     )
 
 
+def _build_bootstrap_seed_findings(scan_id: str) -> list[FindingUpsert]:
+    return [
+        FindingUpsert(
+            id=f"finding-{scan_id}-bola-read",
+            title="Cross-tenant invoice read via direct object reference",
+            category="bola",
+            severity=FindingSeverity.CRITICAL,
+            status=FindingStatus.CONFIRMED,
+            confidence=97,
+            endpoint="GET /v1/invoices/{invoiceId}",
+            actor="second-tenant user",
+            impact_summary="A user can read invoice metadata from another tenant by changing the invoice identifier.",
+            remediation_summary="Enforce tenant ownership checks before loading invoice resources.",
+            description="The verifier replayed a captured owner flow as a second tenant and confirmed that direct invoice object ids returned another tenant's invoice metadata.",
+            impact="Attackers with a normal account can enumerate invoice ids and access cross-tenant billing data without elevated privileges.",
+            remediation="Scope invoice lookups by tenant and owner before fetching the resource, and fail closed when ownership does not match the current principal.",
+            context_references=[
+                ContextReference(
+                    id=f"ctx-{scan_id}-invoice-controller",
+                    kind="source_code",
+                    label="Invoice detail loader",
+                    location="services/invoice_access.py:44",
+                    excerpt="invoice = invoice_repo.get_by_id(invoice_id)",
+                    rationale="The invoice is loaded before a tenant or owner constraint is enforced.",
+                ),
+                ContextReference(
+                    id=f"ctx-{scan_id}-invoice-spec",
+                    kind="api_spec",
+                    label="Invoice detail operation",
+                    location="openapi.yaml#/paths/~1v1~1invoices~1{invoiceId}/get",
+                    excerpt="parameters:\n  - name: invoiceId\n    in: path",
+                    rationale="The API spec exposes a direct object identifier path that aligns with the confirmed exploit path.",
+                ),
+            ],
+            workflow_node_ids=["invoice-detail", "evidence", "finding"],
+            tags=["idor", "tenant-isolation", "billing"],
+            evidence=[
+                FindingEvidence(
+                    label="Verifier replay response",
+                    detail="Replay as tenant B returned tenant A invoice metadata with HTTP 200.",
+                    source="verifier",
+                ),
+                FindingEvidence(
+                    label="Workflow correlation",
+                    detail="The invoice identifier was learned from the owner invoice list and replayed in a second tenant session.",
+                    source="workflow_mapper",
+                ),
+            ],
+        ),
+        FindingUpsert(
+            id=f"finding-{scan_id}-document-download",
+            title="Cross-tenant invoice PDF download",
+            category="excessive_data_exposure",
+            severity=FindingSeverity.HIGH,
+            status=FindingStatus.CONFIRMED,
+            confidence=91,
+            endpoint="GET /v1/invoices/{invoiceId}/pdf",
+            actor="second-tenant user",
+            impact_summary="Invoice documents remain downloadable once a foreign invoice id is known.",
+            remediation_summary="Apply the same ownership guard to document download paths as the primary invoice read path.",
+            description="The download endpoint reused the same unscoped identifier and returned billing documents for a foreign tenant.",
+            impact="Sensitive invoice PDFs can be exfiltrated after discovering a valid cross-tenant object id.",
+            remediation="Reuse centralized ownership enforcement for child document routes and avoid loading files before the ownership check passes.",
+            context_references=[
+                ContextReference(
+                    id=f"ctx-{scan_id}-invoice-pdf-route",
+                    kind="source_code",
+                    label="Invoice PDF download handler",
+                    location="controllers/invoice_documents.py:28",
+                    excerpt="return document_service.stream_invoice_pdf(invoice_id)",
+                    rationale="The document route appears to trust the same invoice id path as the vulnerable detail route.",
+                )
+            ],
+            workflow_node_ids=["invoice-download", "evidence"],
+            tags=["document-exposure", "tenant-isolation"],
+            evidence=[
+                FindingEvidence(
+                    label="Document fetch response",
+                    detail="The PDF download endpoint returned a valid document stream for a foreign tenant invoice.",
+                    source="verifier",
+                )
+            ],
+        ),
+        FindingUpsert(
+            id=f"finding-{scan_id}-unsafe-send",
+            title="Invoice send action uses untrusted object ownership",
+            category="business_logic",
+            severity=FindingSeverity.REVIEW,
+            status=FindingStatus.CANDIDATE,
+            confidence=72,
+            endpoint="POST /v1/invoices/{invoiceId}/send",
+            actor="second-tenant user",
+            impact_summary="The send action appears to trust the same cross-tenant invoice id path and may trigger outbound side effects.",
+            remediation_summary="Re-validate ownership and recipient scope before executing side-effecting billing actions.",
+            description="The send endpoint sits on the same workflow branch as the exploitable invoice read path, but side-effect validation still needs confirmation.",
+            impact="If confirmed, attackers could trigger billing emails or workflow side effects for another tenant.",
+            remediation="Gate side-effect actions with explicit authorization checks and idempotency controls, and log denied attempts.",
+            workflow_node_ids=["invoice-share"],
+            tags=["business-logic", "side-effects"],
+            evidence=[
+                FindingEvidence(
+                    label="Shared object path",
+                    detail="The send endpoint accepts the same invoice identifier pattern used by the confirmed cross-tenant read finding.",
+                    source="orchestrator",
+                )
+            ],
+        ),
+    ]
+
+
+def _build_partner_seed_findings(scan_id: str) -> list[FindingUpsert]:
+    return [
+        FindingUpsert(
+            id=f"finding-{scan_id}-member-keys",
+            title="Invited partner member may inherit key-read access",
+            category="tenant_isolation",
+            severity=FindingSeverity.HIGH,
+            status=FindingStatus.CANDIDATE,
+            confidence=76,
+            endpoint="GET /v1/projects/{projectId}/keys",
+            actor="invited partner member",
+            impact_summary="A newly invited member may inherit key-management read access through a workflow boundary issue.",
+            remediation_summary="Break privilege inheritance between invitation acceptance and key-management capabilities.",
+            description="The workflow mapper discovered a path from project invitation to key-management reads that still needs final verifier confirmation.",
+            impact="If confirmed, third-party collaborators could view or rotate secrets outside their intended project role.",
+            remediation="Separate invitation roles from secret-management roles and require explicit permission grants for key endpoints.",
+            context_references=[
+                ContextReference(
+                    id=f"ctx-{scan_id}-partner-keys-spec",
+                    kind="api_spec",
+                    label="Project keys operation",
+                    location="partner-openapi.yaml#/paths/~1v1~1projects~1{projectId}~1keys/get",
+                    excerpt="summary: Read project keys",
+                    rationale="The documented key-management path lines up with the suspicious invitation-to-key-read workflow branch.",
+                )
+            ],
+            workflow_node_ids=["keys", "review"],
+            tags=["role-boundary", "secrets", "partner-access"],
+            evidence=[
+                FindingEvidence(
+                    label="Workflow path candidate",
+                    detail="Project membership changes lead directly into the key-management branch in the captured flow.",
+                    source="workflow_mapper",
+                )
+            ],
+        )
+    ]
+
+
+def _build_bootstrap_seed_verifier_run(scan_id: str) -> VerifierRunRecord:
+    now = datetime(2026, 3, 19, 0, 24, tzinfo=timezone.utc)
+    return VerifierRunRecord(
+        id="verify-bootstrap-invoice-read",
+        scan_id=scan_id,
+        finding_id=f"finding-{scan_id}-bola-read",
+        status=VerifierRunStatus.CONFIRMED.value,
+        category="bola",
+        severity=FindingSeverity.CRITICAL.value,
+        confidence=97,
+        title="Cross-tenant invoice read via direct object reference",
+        endpoint="GET /v1/invoices/{invoiceId}",
+        actor="second-tenant user",
+        request_fingerprint="invoice-detail-cross-tenant",
+        request_summary="Replay as tenant B returned HTTP 200 for tenant A invoice detail.",
+        response_status_code=200,
+        evidence_json=[
+            {
+                "label": "Verifier replay response",
+                "detail": "Replay as tenant B returned tenant A invoice metadata with HTTP 200.",
+                "source": "verifier",
+            }
+        ],
+        context_references_json=[
+            {
+                "id": f"ctx-{scan_id}-invoice-controller",
+                "kind": "source_code",
+                "label": "Invoice detail loader",
+                "location": "services/invoice_access.py:44",
+                "excerpt": "invoice = invoice_repo.get_by_id(invoice_id)",
+                "rationale": "The invoice is loaded before a tenant or owner constraint is enforced.",
+            },
+            {
+                "id": f"ctx-{scan_id}-invoice-spec",
+                "kind": "api_spec",
+                "label": "Invoice detail operation",
+                "location": "openapi.yaml#/paths/~1v1~1invoices~1{invoiceId}/get",
+                "excerpt": "parameters:\n  - name: invoiceId\n    in: path",
+                "rationale": "The API spec exposes a direct object identifier path that aligns with the confirmed exploit path.",
+            },
+        ],
+        workflow_node_ids_json=["invoice-detail", "evidence", "finding"],
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _build_partner_seed_verifier_job(scan_id: str) -> VerifierJobRecord:
+    now = datetime(2026, 3, 19, 1, 39, tzinfo=timezone.utc)
+    payload = VerifierJobPayload(
+        path_id="path-partner-member-keys",
+        title="Partner member reaches key-management path",
+        rationale="The workflow mapper found a high-risk path from project membership changes to key-management reads that should be verified.",
+        workflow_node_ids=["projects", "members", "keys", "review"],
+        workflow_nodes=[
+            WorkflowNode(id="projects", label="GET /v1/projects", type=WorkflowNodeType.ENDPOINT, phase="read", detail="Partner member lists shared projects.", status=WorkflowNodeStatus.REVIEW, x=660.0, y=180.0),
+            WorkflowNode(id="members", label="POST /v1/projects/{projectId}/members", type=WorkflowNodeType.ENDPOINT, phase="action", detail="Membership changes are applied to a shared project.", status=WorkflowNodeStatus.REVIEW, x=900.0, y=180.0),
+            WorkflowNode(id="keys", label="GET /v1/projects/{projectId}/keys", type=WorkflowNodeType.ENDPOINT, phase="read", detail="Suspicious key-management path reached from the shared member workflow.", status=WorkflowNodeStatus.HIGH, x=1140.0, y=180.0),
+            WorkflowNode(id="path-flag-partner-seed", label="Flagged Path: Partner member reaches key-management path", type=WorkflowNodeType.OBSERVATION, phase="verification", detail="Seeded high-risk path awaiting verification.", status=WorkflowNodeStatus.HIGH, x=1380.0, y=180.0),
+        ],
+        workflow_edges=[
+            WorkflowEdge(source="projects", target="members", label="observed sequence", style="solid", animated=True),
+            WorkflowEdge(source="members", target="keys", label="observed sequence", style="solid", animated=True),
+            WorkflowEdge(source="keys", target="path-flag-partner-seed", label="flagged path", style="dashed", animated=True),
+        ],
+    )
+    return VerifierJobRecord(
+        id="job-partner-member-keys",
+        scan_id=scan_id,
+        source_path_id=payload.path_id,
+        title=payload.title,
+        severity=FindingSeverity.HIGH.value,
+        status=VerifierJobStatus.QUEUED.value,
+        rationale=payload.rationale,
+        payload_json=payload.model_dump(mode="json"),
+        attempt_count=0,
+        max_attempts=3,
+        available_at=now,
+        claimed_at=None,
+        completed_at=None,
+        worker_id=None,
+        verifier_run_id=None,
+        finding_id=None,
+        last_error=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def _persist_graph(record: WorkflowGraphRecord, graph: WorkflowGraph) -> None:
     record.kind = graph.kind.value
     record.scan_id = graph.scan_id
@@ -371,12 +747,193 @@ def _create_event_record(scan_id: str, source: EventSource, event_type: str, sta
     )
 
 
+def _apply_finding_updates(session: Session, scan_id: str, finding_updates: list[FindingUpsert], *, now: datetime) -> list[FindingRecord]:
+    persisted_findings: list[FindingRecord] = []
+    finding_repository = FindingRepository(session)
+
+    for finding_update in finding_updates:
+        finding_id = finding_update.id or f"finding-{uuid4().hex[:10]}"
+        record = finding_repository.get(finding_id)
+
+        if record is None:
+            record = FindingRecord(
+                id=finding_id,
+                scan_id=scan_id,
+                created_at=now,
+                updated_at=now,
+                title=finding_update.title,
+                category=finding_update.category,
+                severity=finding_update.severity.value,
+                status=finding_update.status.value,
+                confidence=finding_update.confidence,
+                endpoint=finding_update.endpoint,
+                actor=finding_update.actor,
+                impact_summary=finding_update.impact_summary,
+                remediation_summary=finding_update.remediation_summary,
+                description=finding_update.description,
+                impact=finding_update.impact,
+                remediation=finding_update.remediation,
+                evidence_json=[item.model_dump(mode="json") for item in finding_update.evidence],
+                context_references_json=[item.model_dump(mode="json") for item in finding_update.context_references],
+                workflow_node_ids_json=list(finding_update.workflow_node_ids),
+                tags_json=list(finding_update.tags),
+            )
+            finding_repository.add(record)
+        else:
+            record.scan_id = scan_id
+            record.title = finding_update.title
+            record.category = finding_update.category
+            record.severity = finding_update.severity.value
+            record.status = finding_update.status.value
+            record.confidence = finding_update.confidence
+            record.endpoint = finding_update.endpoint
+            record.actor = finding_update.actor
+            record.impact_summary = finding_update.impact_summary
+            record.remediation_summary = finding_update.remediation_summary
+            record.description = finding_update.description
+            record.impact = finding_update.impact
+            record.remediation = finding_update.remediation
+            record.evidence_json = [item.model_dump(mode="json") for item in finding_update.evidence]
+            record.context_references_json = [item.model_dump(mode="json") for item in finding_update.context_references]
+            record.workflow_node_ids_json = list(finding_update.workflow_node_ids)
+            record.tags_json = list(finding_update.tags)
+            record.updated_at = now
+
+        persisted_findings.append(record)
+
+    return persisted_findings
+
+
+def _list_findings_for_scan(session: Session, scan_id: str) -> list[FindingRecord]:
+    return FindingRepository(session).list_for_scan(scan_id)
+
+
+def _upsert_verifier_run(
+    session: Session,
+    scan_id: str,
+    contract: VerifierFindingConfirmedContract,
+    *,
+    now: datetime,
+) -> VerifierRunRecord:
+    repository = VerifierRunRepository(session)
+    record = repository.get(contract.verifier_run_id)
+    finding_id = contract.finding.id
+    if record is None:
+        record = VerifierRunRecord(
+            id=contract.verifier_run_id,
+            scan_id=scan_id,
+            finding_id=finding_id,
+            status=VerifierRunStatus.CONFIRMED.value,
+            category=contract.finding.category,
+            severity=contract.finding.severity.value,
+            confidence=contract.finding.confidence,
+            title=contract.finding.title,
+            endpoint=contract.finding.endpoint,
+            actor=contract.finding.actor,
+            request_fingerprint=contract.request_fingerprint,
+            request_summary=contract.request_summary,
+            response_status_code=contract.response_status_code,
+            evidence_json=[item.model_dump(mode="json") for item in contract.finding.evidence],
+            context_references_json=[item.model_dump(mode="json") for item in contract.finding.context_references],
+            workflow_node_ids_json=list(contract.finding.workflow_node_ids),
+            created_at=now,
+            updated_at=now,
+        )
+        repository.add(record)
+        return record
+
+    record.scan_id = scan_id
+    record.finding_id = finding_id
+    record.status = VerifierRunStatus.CONFIRMED.value
+    record.category = contract.finding.category
+    record.severity = contract.finding.severity.value
+    record.confidence = contract.finding.confidence
+    record.title = contract.finding.title
+    record.endpoint = contract.finding.endpoint
+    record.actor = contract.finding.actor
+    record.request_fingerprint = contract.request_fingerprint
+    record.request_summary = contract.request_summary
+    record.response_status_code = contract.response_status_code
+    record.evidence_json = [item.model_dump(mode="json") for item in contract.finding.evidence]
+    record.context_references_json = [item.model_dump(mode="json") for item in contract.finding.context_references]
+    record.workflow_node_ids_json = list(contract.finding.workflow_node_ids)
+    record.updated_at = now
+    return record
+
+
+def _build_verifier_job_payload(contract: WorkflowMapperPathFlaggedContract) -> VerifierJobPayload:
+    endpoint_node_ids = [
+        node.id
+        for node in contract.nodes
+        if node.type in {WorkflowNodeType.ENDPOINT, WorkflowNodeType.ACTION, WorkflowNodeType.OBSERVATION}
+    ]
+    return VerifierJobPayload(
+        path_id=contract.path_id,
+        title=contract.title,
+        rationale=contract.rationale,
+        workflow_node_ids=endpoint_node_ids,
+        workflow_nodes=list(contract.nodes),
+        workflow_edges=list(contract.edges),
+    )
+
+
+def _queue_verifier_job_from_path_contract(
+    session: Session,
+    scan_id: str,
+    contract: WorkflowMapperPathFlaggedContract,
+    *,
+    now: datetime,
+) -> VerifierJobRecord | None:
+    if contract.severity not in {FindingSeverity.HIGH, FindingSeverity.CRITICAL}:
+        return None
+
+    repository = VerifierJobRepository(session)
+    existing = repository.get_active_by_path(scan_id, contract.path_id)
+    payload = _build_verifier_job_payload(contract)
+
+    if existing is not None:
+        existing.title = contract.title
+        existing.severity = contract.severity.value
+        existing.rationale = contract.rationale
+        existing.payload_json = payload.model_dump(mode="json")
+        existing.updated_at = now
+        existing.available_at = min(existing.available_at, now)
+        return existing
+
+    job = VerifierJobRecord(
+        id=f"job-{uuid4().hex[:10]}",
+        scan_id=scan_id,
+        source_path_id=contract.path_id,
+        title=contract.title,
+        severity=contract.severity.value,
+        status=VerifierJobStatus.QUEUED.value,
+        rationale=contract.rationale,
+        payload_json=payload.model_dump(mode="json"),
+        attempt_count=0,
+        max_attempts=3,
+        available_at=now,
+        claimed_at=None,
+        completed_at=None,
+        worker_id=None,
+        verifier_run_id=None,
+        finding_id=None,
+        last_error=None,
+        created_at=now,
+        updated_at=now,
+    )
+    repository.add(job)
+    return job
+
+
 class AuditStore:
     def ensure_seed_data(self) -> None:
         with session_scope() as session:
-            framework_exists = session.scalar(
-                select(WorkflowGraphRecord).where(WorkflowGraphRecord.kind == WorkflowGraphKind.FRAMEWORK_PRINCIPLE.value)
-            )
+            scan_repository = ScanRepository(session)
+            workflow_repository = WorkflowRepository(session)
+            finding_repository = FindingRepository(session)
+            event_repository = EventRepository(session)
+
+            framework_exists = workflow_repository.get_framework_principle()
             if framework_exists is None:
                 framework_graph = _build_framework_principle_graph()
                 framework_record = WorkflowGraphRecord(
@@ -390,10 +947,25 @@ class AuditStore:
                     edges_json=_serialize_edges(framework_graph.edges),
                     updated_at=framework_graph.updated_at,
                 )
-                session.add(framework_record)
+                workflow_repository.add(framework_record)
 
-            scan_exists = session.scalar(select(ScanRunRecord.id).limit(1))
-            if scan_exists is not None:
+            if scan_repository.exists_any():
+                if not finding_repository.exists_any():
+                    if scan_repository.get("bootstrap-scan") is not None:
+                        _apply_finding_updates(session, "bootstrap-scan", _build_bootstrap_seed_findings("bootstrap-scan"), now=_utc_now())
+                    if scan_repository.get("partner-boundary-scan") is not None:
+                        _apply_finding_updates(
+                            session,
+                            "partner-boundary-scan",
+                            _build_partner_seed_findings("partner-boundary-scan"),
+                            now=_utc_now(),
+                        )
+                verifier_run_repository = VerifierRunRepository(session)
+                if verifier_run_repository.get("verify-bootstrap-invoice-read") is None and scan_repository.get("bootstrap-scan") is not None:
+                    verifier_run_repository.add(_build_bootstrap_seed_verifier_run("bootstrap-scan"))
+                verifier_job_repository = VerifierJobRepository(session)
+                if verifier_job_repository.get("job-partner-member-keys") is None and scan_repository.get("partner-boundary-scan") is not None:
+                    verifier_job_repository.add(_build_partner_seed_verifier_job("partner-boundary-scan"))
                 return
 
             bootstrap_scan = ScanRunRecord(
@@ -450,70 +1022,76 @@ class AuditStore:
                 updated_at=partner_graph.updated_at,
             )
 
-            session.add_all([bootstrap_scan, bootstrap_record, partner_scan, partner_record])
-            session.add_all(
-                [
-                    _create_event_record(
-                        bootstrap_scan.id,
-                        EventSource.PROXY,
-                        "traffic_capture_completed",
-                        "ingestion",
-                        EventSeverity.INFO,
-                        "Captured owner billing workflow from staging traffic.",
-                        {"endpoint_count": 4, "actor": "owner"},
-                        created_at=datetime(2026, 3, 19, 0, 3, tzinfo=timezone.utc),
-                    ),
-                    _create_event_record(
-                        bootstrap_scan.id,
-                        EventSource.ORCHESTRATOR,
-                        "workflow_hypothesis_generated",
-                        "reasoning",
-                        EventSeverity.WARNING,
-                        "Direct invoice object lookups may bypass tenant ownership checks.",
-                        {"focus_node": "invoice-detail"},
-                        created_at=datetime(2026, 3, 19, 0, 11, tzinfo=timezone.utc),
-                    ),
-                    _create_event_record(
-                        bootstrap_scan.id,
-                        EventSource.VERIFIER,
-                        "finding_confirmed",
-                        "reporting",
-                        EventSeverity.CRITICAL,
-                        "Verifier replay confirmed cross-tenant invoice access through direct object references.",
-                        {"focus_node": "finding", "finding_type": "bola"},
-                        created_at=datetime(2026, 3, 19, 0, 24, tzinfo=timezone.utc),
-                    ),
-                    _create_event_record(
-                        partner_scan.id,
-                        EventSource.PROXY,
-                        "partner_flow_ingested",
-                        "ingestion",
-                        EventSeverity.INFO,
-                        "Partner portal invitation and key-management flow captured for review.",
-                        {"focus_node": "projects"},
-                        created_at=datetime(2026, 3, 19, 1, 32, tzinfo=timezone.utc),
-                    ),
-                    _create_event_record(
-                        partner_scan.id,
-                        EventSource.WORKFLOW_MAPPER,
-                        "boundary_path_discovered",
-                        "verification",
-                        EventSeverity.WARNING,
-                        "Workflow mapper found a candidate privilege-escalation path from project member invite to key read.",
-                        {"focus_node": "keys"},
-                        created_at=datetime(2026, 3, 19, 1, 38, tzinfo=timezone.utc),
-                    ),
-                ]
-            )
+            scan_repository.add(bootstrap_scan)
+            workflow_repository.add(bootstrap_record)
+            scan_repository.add(partner_scan)
+            workflow_repository.add(partner_record)
+            _apply_finding_updates(session, bootstrap_scan.id, _build_bootstrap_seed_findings(bootstrap_scan.id), now=_utc_now())
+            _apply_finding_updates(session, partner_scan.id, _build_partner_seed_findings(partner_scan.id), now=_utc_now())
+            VerifierRunRepository(session).add(_build_bootstrap_seed_verifier_run(bootstrap_scan.id))
+            VerifierJobRepository(session).add(_build_partner_seed_verifier_job(partner_scan.id))
+            for event_record in [
+                _create_event_record(
+                    bootstrap_scan.id,
+                    EventSource.PROXY,
+                    "traffic_capture_completed",
+                    "ingestion",
+                    EventSeverity.INFO,
+                    "Captured owner billing workflow from staging traffic.",
+                    {"endpoint_count": 4, "actor": "owner"},
+                    created_at=datetime(2026, 3, 19, 0, 3, tzinfo=timezone.utc),
+                ),
+                _create_event_record(
+                    bootstrap_scan.id,
+                    EventSource.ORCHESTRATOR,
+                    "workflow_hypothesis_generated",
+                    "reasoning",
+                    EventSeverity.WARNING,
+                    "Direct invoice object lookups may bypass tenant ownership checks.",
+                    {"focus_node": "invoice-detail"},
+                    created_at=datetime(2026, 3, 19, 0, 11, tzinfo=timezone.utc),
+                ),
+                _create_event_record(
+                    bootstrap_scan.id,
+                    EventSource.VERIFIER,
+                    "finding_confirmed",
+                    "reporting",
+                    EventSeverity.CRITICAL,
+                    "Verifier replay confirmed cross-tenant invoice access through direct object references.",
+                    {"focus_node": "finding", "finding_type": "bola"},
+                    created_at=datetime(2026, 3, 19, 0, 24, tzinfo=timezone.utc),
+                ),
+                _create_event_record(
+                    partner_scan.id,
+                    EventSource.PROXY,
+                    "partner_flow_ingested",
+                    "ingestion",
+                    EventSeverity.INFO,
+                    "Partner portal invitation and key-management flow captured for review.",
+                    {"focus_node": "projects"},
+                    created_at=datetime(2026, 3, 19, 1, 32, tzinfo=timezone.utc),
+                ),
+                _create_event_record(
+                    partner_scan.id,
+                    EventSource.WORKFLOW_MAPPER,
+                    "boundary_path_discovered",
+                    "verification",
+                    EventSeverity.WARNING,
+                    "Workflow mapper found a candidate privilege-escalation path from project member invite to key read.",
+                    {"focus_node": "keys"},
+                    created_at=datetime(2026, 3, 19, 1, 38, tzinfo=timezone.utc),
+                ),
+            ]:
+                event_repository.add(event_record)
 
     def list_scans(self) -> list[ScanRunSummary]:
         with session_scope() as session:
-            records = session.scalars(select(ScanRunRecord).order_by(ScanRunRecord.created_at.desc())).all()
+            records = ScanRepository(session).list()
             return [_scan_record_to_model(record) for record in records]
 
     def get_scan(self, scan_id: str) -> ScanRunSummary | None:
         with session_scope() as session:
-            record = session.get(ScanRunRecord, scan_id)
+            record = ScanRepository(session).get(scan_id)
             return _scan_record_to_model(record) if record else None
 
     def start_scan(self, payload: StartScanRequest) -> ScanRunSummary:
@@ -524,6 +1102,10 @@ class AuditStore:
         graph.updated_at = now
 
         with session_scope() as session:
+            scan_repository = ScanRepository(session)
+            workflow_repository = WorkflowRepository(session)
+            event_repository = EventRepository(session)
+
             scan_record = ScanRunRecord(
                 id=scan_id,
                 name=payload.name,
@@ -549,8 +1131,9 @@ class AuditStore:
                 edges_json=_serialize_edges(graph.edges),
                 updated_at=graph.updated_at,
             )
-            session.add_all([scan_record, graph_record])
-            session.add(
+            scan_repository.add(scan_record)
+            workflow_repository.add(graph_record)
+            event_repository.add(
                 _create_event_record(
                     scan_id,
                     EventSource.SYSTEM,
@@ -567,39 +1150,213 @@ class AuditStore:
 
     def get_scan_workflow(self, scan_id: str) -> WorkflowGraph | None:
         with session_scope() as session:
-            record = session.scalar(select(WorkflowGraphRecord).where(WorkflowGraphRecord.scan_id == scan_id))
+            record = WorkflowRepository(session).get_by_scan_id(scan_id)
             return _graph_record_to_model(record) if record else None
 
     def get_framework_principle(self) -> WorkflowGraph | None:
         with session_scope() as session:
-            record = session.scalar(
-                select(WorkflowGraphRecord).where(WorkflowGraphRecord.kind == WorkflowGraphKind.FRAMEWORK_PRINCIPLE.value)
-            )
+            record = WorkflowRepository(session).get_framework_principle()
             return _graph_record_to_model(record) if record else None
+
+    def list_findings(
+        self,
+        *,
+        scan_id: str | None = None,
+        severity: FindingSeverity | None = None,
+        status: FindingStatus | None = None,
+    ) -> list[FindingSummary]:
+        with session_scope() as session:
+            records = FindingRepository(session).list(
+                scan_id=scan_id,
+                severity=severity.value if severity is not None else None,
+                status=status.value if status is not None else None,
+            )
+            return [_finding_record_to_summary(record) for record in records]
+
+    def get_finding(self, finding_id: str) -> FindingDetail | None:
+        with session_scope() as session:
+            record = FindingRepository(session).get(finding_id)
+            return _finding_record_to_detail(record) if record else None
+
+    def list_verifier_runs(self, scan_id: str) -> list[VerifierRunSummary]:
+        with session_scope() as session:
+            records = VerifierRunRepository(session).list_for_scan(scan_id)
+            return [_verifier_run_record_to_summary(record) for record in records]
+
+    def get_verifier_run(self, verifier_run_id: str) -> VerifierRunDetail | None:
+        with session_scope() as session:
+            record = VerifierRunRepository(session).get(verifier_run_id)
+            return _verifier_run_record_to_detail(record) if record else None
+
+    def list_verifier_jobs(self, scan_id: str) -> list[VerifierJobSummary]:
+        with session_scope() as session:
+            records = VerifierJobRepository(session).list_for_scan(scan_id)
+            return [_verifier_job_record_to_summary(record) for record in records]
+
+    def get_verifier_job(self, verifier_job_id: str) -> VerifierJobDetail | None:
+        with session_scope() as session:
+            record = VerifierJobRepository(session).get(verifier_job_id)
+            return _verifier_job_record_to_detail(record) if record else None
+
+    def claim_verifier_job(self, payload: ClaimVerifierJobRequest) -> VerifierJobDetail | None:
+        with session_scope() as session:
+            repository = VerifierJobRepository(session)
+            now = _utc_now()
+            claimable = repository.list_claimable(now=now, scan_id=payload.scan_id)
+            if not claimable:
+                return None
+
+            record = sorted(
+                claimable,
+                key=lambda item: (_severity_priority(item.severity), item.available_at, item.created_at, item.id),
+            )[0]
+            record.status = VerifierJobStatus.RUNNING.value
+            record.attempt_count += 1
+            record.claimed_at = now
+            record.worker_id = payload.worker_id or "verifier-worker"
+            record.updated_at = now
+
+            EventRepository(session).add(
+                _create_event_record(
+                    record.scan_id,
+                    EventSource.SYSTEM,
+                    "verifier_job.claimed",
+                    "verification",
+                    EventSeverity.INFO,
+                    f"Verifier job {record.id} claimed by {record.worker_id}.",
+                    {"job_id": record.id, "path_id": record.source_path_id, "worker_id": record.worker_id},
+                    created_at=now,
+                )
+            )
+
+            return _verifier_job_record_to_detail(record)
+
+    def complete_verifier_job(self, verifier_job_id: str, payload: CompleteVerifierJobRequest) -> VerifierJobDetail | None:
+        with session_scope() as session:
+            repository = VerifierJobRepository(session)
+            record = repository.get(verifier_job_id)
+            if record is None:
+                return None
+
+            now = _utc_now()
+            record.status = VerifierJobStatus.SUCCEEDED.value
+            record.completed_at = now
+            record.updated_at = now
+            record.last_error = payload.note
+            if payload.verifier_run_id is not None:
+                record.verifier_run_id = payload.verifier_run_id
+            if payload.finding_id is not None:
+                record.finding_id = payload.finding_id
+
+            EventRepository(session).add(
+                _create_event_record(
+                    record.scan_id,
+                    EventSource.SYSTEM,
+                    "verifier_job.completed",
+                    "reporting",
+                    EventSeverity.INFO,
+                    f"Verifier job {record.id} completed successfully.",
+                    {
+                        "job_id": record.id,
+                        "verifier_run_id": record.verifier_run_id,
+                        "finding_id": record.finding_id,
+                    },
+                    created_at=now,
+                )
+            )
+
+            return _verifier_job_record_to_detail(record)
+
+    def fail_verifier_job(self, verifier_job_id: str, payload: FailVerifierJobRequest) -> VerifierJobDetail | None:
+        with session_scope() as session:
+            repository = VerifierJobRepository(session)
+            record = repository.get(verifier_job_id)
+            if record is None:
+                return None
+
+            now = _utc_now()
+            retry_scheduled = payload.retryable and record.attempt_count < record.max_attempts
+            record.last_error = payload.error_message
+            record.updated_at = now
+
+            if retry_scheduled:
+                record.status = VerifierJobStatus.QUEUED.value
+                record.available_at = now + timedelta(seconds=payload.retry_delay_seconds)
+                record.claimed_at = None
+                record.worker_id = None
+                event_type = "verifier_job.retry_scheduled"
+                message = f"Verifier job {record.id} re-queued after failure."
+                stage = "verification"
+                severity = EventSeverity.WARNING
+            else:
+                record.status = VerifierJobStatus.FAILED.value
+                record.completed_at = now
+                event_type = "verifier_job.failed"
+                message = f"Verifier job {record.id} failed permanently."
+                stage = "verification"
+                severity = EventSeverity.HIGH
+
+            EventRepository(session).add(
+                _create_event_record(
+                    record.scan_id,
+                    EventSource.SYSTEM,
+                    event_type,
+                    stage,
+                    severity,
+                    message,
+                    {
+                        "job_id": record.id,
+                        "error": payload.error_message,
+                        "retryable": retry_scheduled,
+                        "attempt_count": record.attempt_count,
+                    },
+                    created_at=now,
+                )
+            )
+
+            return _verifier_job_record_to_detail(record)
 
     def list_scan_events(self, scan_id: str, *, after_id: int | None = None, limit: int = 40) -> list[ScanEvent]:
         with session_scope() as session:
-            query = select(ScanEventRecord).where(ScanEventRecord.scan_id == scan_id)
-            if after_id is not None:
-                query = query.where(ScanEventRecord.id > after_id)
-
-            records = session.scalars(query.order_by(ScanEventRecord.id.asc()).limit(limit)).all()
+            records = EventRepository(session).list_for_scan(scan_id, after_id=after_id, limit=limit)
             return [_event_record_to_model(record) for record in records]
+
+    def record_scan_event(self, scan_id: str, payload: RecordScanEventRequest) -> ScanEvent | None:
+        with session_scope() as session:
+            scan_record = ScanRepository(session).get(scan_id)
+            if scan_record is None:
+                return None
+
+            now = _utc_now()
+            event_record = _create_event_record(
+                scan_id,
+                payload.source,
+                payload.event_type,
+                payload.stage,
+                payload.severity,
+                payload.message,
+                payload.payload,
+                created_at=now,
+            )
+            EventRepository(session).add(event_record)
+            scan_record.updated_at = now
+            session.flush()
+            session.refresh(event_record)
+            return _event_record_to_model(event_record)
 
     def get_runtime_snapshot(self, scan_id: str, *, event_limit: int = 25) -> ScanStreamSnapshot | None:
         with session_scope() as session:
-            scan_record = session.get(ScanRunRecord, scan_id)
-            graph_record = session.scalar(select(WorkflowGraphRecord).where(WorkflowGraphRecord.scan_id == scan_id))
+            scan_repository = ScanRepository(session)
+            workflow_repository = WorkflowRepository(session)
+            event_repository = EventRepository(session)
+
+            scan_record = scan_repository.get(scan_id)
+            graph_record = workflow_repository.get_by_scan_id(scan_id)
 
             if scan_record is None or graph_record is None:
                 return None
 
-            event_records = session.scalars(
-                select(ScanEventRecord)
-                .where(ScanEventRecord.scan_id == scan_id)
-                .order_by(ScanEventRecord.id.desc())
-                .limit(event_limit)
-            ).all()
+            event_records = event_repository.list_recent_for_scan(scan_id, limit=event_limit)
             events = [_event_record_to_model(record) for record in reversed(event_records)]
             return ScanStreamSnapshot(
                 scan=_scan_record_to_model(scan_record),
@@ -609,8 +1366,12 @@ class AuditStore:
 
     def ingest_scan_event(self, scan_id: str, payload: IngestScanEventRequest) -> ScanEventEnvelope | None:
         with session_scope() as session:
-            scan_record = session.get(ScanRunRecord, scan_id)
-            graph_record = session.scalar(select(WorkflowGraphRecord).where(WorkflowGraphRecord.scan_id == scan_id))
+            scan_repository = ScanRepository(session)
+            workflow_repository = WorkflowRepository(session)
+            event_repository = EventRepository(session)
+
+            scan_record = scan_repository.get(scan_id)
+            graph_record = workflow_repository.get_by_scan_id(scan_id)
 
             if scan_record is None or graph_record is None:
                 return None
@@ -627,22 +1388,61 @@ class AuditStore:
             elif scan_record.status == ScanStatus.QUEUED.value and payload.source != EventSource.SYSTEM:
                 scan_record.status = ScanStatus.RUNNING.value
 
-            if payload.findings_increment != 0:
+            finding_risk: ScanRisk | None = None
+            if payload.finding_updates:
+                persisted_findings = _apply_finding_updates(session, scan_id, payload.finding_updates, now=now)
+                session.flush()
+                if persisted_findings:
+                    finding_risk = max(
+                        (_risk_from_finding_severity(FindingSeverity(record.severity)) for record in persisted_findings),
+                        key=lambda risk: RISK_ORDER[risk],
+                    )
+
+                active_findings = [
+                    record
+                    for record in _list_findings_for_scan(session, scan_id)
+                    if FindingStatus(record.status) != FindingStatus.RESOLVED
+                ]
+                scan_record.findings_count = len(active_findings)
+            elif payload.findings_increment != 0:
                 scan_record.findings_count = max(0, scan_record.findings_count + payload.findings_increment)
 
             if payload.flagged_paths_increment != 0:
                 scan_record.flagged_paths = max(0, scan_record.flagged_paths + payload.flagged_paths_increment)
 
-            merged_risk = _merge_risk(
-                ScanRisk(scan_record.risk),
-                payload.risk or _risk_from_severity(payload.severity),
-            )
+            merged_risk = _merge_risk(ScanRisk(scan_record.risk), _risk_from_severity(payload.severity))
+            merged_risk = _merge_risk(merged_risk, payload.risk)
+            merged_risk = _merge_risk(merged_risk, finding_risk)
             scan_record.risk = merged_risk.value
             scan_record.updated_at = now
 
             graph = _graph_record_to_model(graph_record)
             graph = _apply_graph_update(graph, payload.graph_update, scan_record.flagged_paths)
             _persist_graph(graph_record, graph)
+
+            queued_job: VerifierJobRecord | None = None
+            if isinstance(payload.producer_contract, WorkflowMapperPathFlaggedContract):
+                queued_job = _queue_verifier_job_from_path_contract(session, scan_id, payload.producer_contract, now=now)
+                if queued_job is not None:
+                    EventRepository(session).add(
+                        _create_event_record(
+                            scan_id,
+                            EventSource.SYSTEM,
+                            "verifier_job.queued",
+                            "verification",
+                            EventSeverity.INFO,
+                            f"Queued verifier job {queued_job.id} for flagged path {queued_job.source_path_id}.",
+                            {
+                                "job_id": queued_job.id,
+                                "path_id": queued_job.source_path_id,
+                                "severity": queued_job.severity,
+                            },
+                            created_at=now,
+                        )
+                    )
+
+            if isinstance(payload.producer_contract, VerifierFindingConfirmedContract):
+                _upsert_verifier_run(session, scan_id, payload.producer_contract, now=now)
 
             event_record = _create_event_record(
                 scan_id,
@@ -654,7 +1454,7 @@ class AuditStore:
                 payload.payload,
                 created_at=now,
             )
-            session.add(event_record)
+            event_repository.add(event_record)
             session.flush()
             session.refresh(event_record)
 

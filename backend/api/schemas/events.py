@@ -5,7 +5,10 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
+from pydantic import model_validator
 
+from api.schemas.findings import FindingUpsert
+from api.schemas.producer_contracts import ProducerContractPayload
 from api.schemas.scans import ScanRisk, ScanRunSummary, ScanStatus
 from api.schemas.workflows import WorkflowEdge, WorkflowGraph, WorkflowNode
 
@@ -42,18 +45,35 @@ class WorkflowGraphUpdate(BaseModel):
 
 
 class IngestScanEventRequest(BaseModel):
+    contract_version: str = Field(default="v1", min_length=2, max_length=16)
     source: EventSource
     event_type: str = Field(min_length=2, max_length=80)
     stage: str = Field(min_length=2, max_length=64)
     severity: EventSeverity = EventSeverity.INFO
     message: str = Field(min_length=3, max_length=500)
+    producer_contract: ProducerContractPayload | None = None
     payload: dict[str, Any] | None = None
     scan_status: ScanStatus | None = None
     risk: ScanRisk | None = None
     current_stage: str | None = None
     findings_increment: int = 0
     flagged_paths_increment: int = 0
+    finding_updates: list[FindingUpsert] = Field(default_factory=list)
     graph_update: WorkflowGraphUpdate | None = None
+
+    @model_validator(mode="after")
+    def validate_contract_alignment(self) -> IngestScanEventRequest:
+        if self.producer_contract is None:
+            return self
+
+        contract_source = self.producer_contract.kind.split(".", maxsplit=1)[0]
+        if contract_source != self.source.value:
+            raise ValueError("Producer contract kind must match the event source.")
+
+        if self.event_type != self.producer_contract.kind:
+            raise ValueError("Event type must equal the producer contract kind when producer_contract is provided.")
+
+        return self
 
 
 class ScanEvent(BaseModel):
@@ -78,3 +98,12 @@ class ScanStreamSnapshot(BaseModel):
     scan: ScanRunSummary
     graph: WorkflowGraph
     events: list[ScanEvent]
+
+
+class RecordScanEventRequest(BaseModel):
+    source: EventSource
+    event_type: str = Field(min_length=2, max_length=80)
+    stage: str = Field(min_length=2, max_length=64)
+    severity: EventSeverity = EventSeverity.INFO
+    message: str = Field(min_length=3, max_length=500)
+    payload: dict[str, Any] | None = None

@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from api.app.config import get_settings
+from api.app.security import require_ingest_token
 from api.schemas.events import IngestScanEventRequest, ScanEvent, ScanEventEnvelope
+from api.schemas.findings import FindingSummary
 from api.schemas.scans import ScanRunSummary, StartScanRequest, StartScanResponse
+from api.schemas.verifier_jobs import VerifierJobSummary
+from api.schemas.verifier_runs import VerifierRunSummary
 from api.schemas.workflows import WorkflowGraph
 from api.services.event_service import event_service
+from api.services.finding_service import finding_service
 from api.services.scan_service import scan_service
+from api.services.verifier_job_service import verifier_job_service
+from api.services.verifier_run_service import verifier_run_service
 from api.services.workflow_service import workflow_service
 from api.streaming.sse import encode_sse
 
@@ -31,13 +38,44 @@ async def list_scan_events(scan_id: str) -> list[ScanEvent]:
     return event_service.list_scan_events(scan_id)
 
 
+@router.get("/{scan_id}/findings", response_model=list[FindingSummary], summary="List findings for a scan run")
+async def list_scan_findings(scan_id: str) -> list[FindingSummary]:
+    scan = scan_service.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan run not found.")
+
+    return finding_service.list_findings(scan_id=scan_id)
+
+
+@router.get("/{scan_id}/verifier-runs", response_model=list[VerifierRunSummary], summary="List verifier runs for a scan run")
+async def list_scan_verifier_runs(scan_id: str) -> list[VerifierRunSummary]:
+    scan = scan_service.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan run not found.")
+
+    return verifier_run_service.list_verifier_runs(scan_id)
+
+
+@router.get("/{scan_id}/verifier-jobs", response_model=list[VerifierJobSummary], summary="List verifier jobs for a scan run")
+async def list_scan_verifier_jobs(scan_id: str) -> list[VerifierJobSummary]:
+    scan = scan_service.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan run not found.")
+
+    return verifier_job_service.list_verifier_jobs(scan_id)
+
+
 @router.post(
     "/{scan_id}/events",
     response_model=ScanEventEnvelope,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Ingest runtime output for a scan run",
 )
-async def ingest_scan_event(scan_id: str, payload: IngestScanEventRequest) -> ScanEventEnvelope:
+async def ingest_scan_event(
+    scan_id: str,
+    payload: IngestScanEventRequest,
+    _: None = Depends(require_ingest_token),
+) -> ScanEventEnvelope:
     envelope = event_service.ingest_scan_event(scan_id, payload)
     if envelope is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan run not found.")

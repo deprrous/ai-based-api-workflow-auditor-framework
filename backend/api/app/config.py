@@ -47,6 +47,8 @@ class Settings:
     database_auto_create: bool
     seed_data: bool
     sse_poll_interval: float
+    ingest_tokens: tuple[str, ...]
+    admin_tokens: tuple[str, ...]
 
 
 @lru_cache
@@ -68,4 +70,6 @@ def get_settings() -> Settings:
         database_auto_create=_read_bool(os.getenv("AUDITOR_DATABASE_AUTO_CREATE"), default=True),
         seed_data=_read_bool(os.getenv("AUDITOR_SEED_DATA"), default=True),
         sse_poll_interval=_read_float(os.getenv("AUDITOR_SSE_POLL_INTERVAL"), default=1.0),
+        ingest_tokens=_read_csv(os.getenv("AUDITOR_INGEST_TOKENS"), tuple()),
+        admin_tokens=_read_csv(os.getenv("AUDITOR_ADMIN_TOKENS"), tuple()),
     )
