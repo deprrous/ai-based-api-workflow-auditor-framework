@@ -114,6 +114,13 @@ Current replay mutation support includes:
 - per-request actor switching
 - token/session refresh retry logic
 
+Current replay assertion and response analysis support includes:
+
+- SQL error and time-based indicators
+- SSRF metadata or callback-style indicators
+- stored/reflected XSS marker confirmation
+- cross-actor authorization drift comparison
+
 Raw replayable request artifacts are stored separately from scan event payloads so workers can reproduce captured POST, PATCH, cookie, and header state more accurately.
 
 Retention policy is now built in:

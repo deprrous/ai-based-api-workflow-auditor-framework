@@ -5,6 +5,7 @@ import base64
 from dataclasses import dataclass
 import hashlib
 import json
+import time
 from typing import Callable, Protocol
 from urllib import parse
 
@@ -14,11 +15,19 @@ from api.app.config import Settings
 from api.schemas.events import EventSeverity, EventSource, RecordScanEventRequest
 from api.schemas.findings import FindingEvidence, FindingSeverity
 from api.schemas.replay_artifacts import ReplayArtifactMaterial
-from api.schemas.verifier_jobs import ReplayMutationSpec, ReplayMutationType, ReplayRefreshRequestSpec, ReplayRequestSpec
+from api.schemas.verifier_jobs import (
+    ReplayAssertionSpec,
+    ReplayMutationSpec,
+    ReplayMutationType,
+    ReplayPlan,
+    ReplayRefreshRequestSpec,
+    ReplayRequestSpec,
+)
 from api.schemas.verifier_jobs import ClaimVerifierJobRequest, CompleteVerifierJobRequest, FailVerifierJobRequest, VerifierJobDetail
 from api.services.event_service import event_service
 from api.services.replay_artifact_service import replay_artifact_service
 from api.services.verifier_job_service import verifier_job_service
+from tools.verifier.response_analysis import evaluate_assertions
 from tools.verifier.worker import VerifierReplayResult, build_ingest_request
 
 
@@ -60,6 +69,7 @@ class ReplayHttpResult:
     status_code: int
     body_excerpt: str
     response_headers: dict[str, str]
+    duration_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +154,7 @@ def _default_http_transport(
     body: bytes | None,
 ) -> ReplayHttpResult:
     url = _request_url(base_url, request_spec)
+    started_at = time.monotonic()
     response = httpx.request(
         request_spec.method.upper(),
         url,
@@ -159,6 +170,7 @@ def _default_http_transport(
         status_code=response.status_code,
         body_excerpt=_response_excerpt(response.text),
         response_headers={str(key): str(value) for key, value in response.headers.items()},
+        duration_ms=int((time.monotonic() - started_at) * 1000),
     )
 
 
@@ -272,7 +284,7 @@ class HttpReplayVerifierExecutor:
         return replay_artifact_service.get_replay_artifact_material(request_spec.artifact_id)
 
     def execute(self, job: VerifierJobDetail) -> VerifierExecutionOutcome:
-        replay_plan = job.payload.replay_plan
+        replay_plan = self._normalized_replay_plan(job.payload.replay_plan)
         if replay_plan is None or not replay_plan.requests:
             return VerifierExecutionOutcome(
                 confirmed=False,
@@ -282,6 +294,7 @@ class HttpReplayVerifierExecutor:
         default_actor = replay_plan.actor or (replay_plan.requests[-1].actor if replay_plan.requests else None)
         dynamic_headers: dict[str, str] = {}
         response_results: list[ReplayHttpResult] = []
+        baseline_results: dict[str, ReplayHttpResult] = {}
         for request_spec in replay_plan.requests:
             artifact = self._artifact_for_request(request_spec)
             if request_spec.artifact_id is not None and artifact is not None and not artifact.replayable:
@@ -301,7 +314,7 @@ class HttpReplayVerifierExecutor:
                     ),
                 )
 
-            response_result = self._execute_request(
+            baseline_result, response_result = self._execute_request(
                 request_spec,
                 artifact=artifact,
                 plan_actor=default_actor,
@@ -315,7 +328,7 @@ class HttpReplayVerifierExecutor:
                     dynamic_headers=dynamic_headers,
                 )
                 if refresh_succeeded:
-                    response_result = self._execute_request(
+                    baseline_result, response_result = self._execute_request(
                         request_spec,
                         artifact=artifact,
                         plan_actor=default_actor,
@@ -324,9 +337,22 @@ class HttpReplayVerifierExecutor:
                     )
 
             response_results.append(response_result)
+            if baseline_result is not None:
+                baseline_results[response_result.request.request_fingerprint] = baseline_result
             _apply_set_cookie(dynamic_headers, response_result.response_headers)
         final_result = response_results[-1]
-        if final_result.status_code not in replay_plan.success_status_codes:
+        assertions_passed, assertion_explanations = evaluate_assertions(
+            replay_plan.assertions,
+            response_results,
+            baseline_results=baseline_results,
+        )
+        if replay_plan.assertions and not assertions_passed:
+            return VerifierExecutionOutcome(
+                confirmed=False,
+                replay_result=None,
+                note=" ".join(assertion_explanations),
+            )
+        if not replay_plan.assertions and final_result.status_code not in replay_plan.success_status_codes:
             return VerifierExecutionOutcome(
                 confirmed=False,
                 replay_result=None,
@@ -339,11 +365,22 @@ class HttpReplayVerifierExecutor:
         evidence = [
             FindingEvidence(
                 label=f"Replay {result.request.method.upper()} {result.request.path}",
-                detail=f"{result.url} returned HTTP {result.status_code}. Response excerpt: {result.body_excerpt or '<empty>'}",
+                detail=(
+                    f"{result.url} returned HTTP {result.status_code} in {result.duration_ms} ms. "
+                    f"Response excerpt: {result.body_excerpt or '<empty>'}"
+                ),
                 source="verifier",
             )
             for result in response_results
         ]
+        evidence.extend(
+            FindingEvidence(
+                label="Replay assertion result",
+                detail=message,
+                source="verifier",
+            )
+            for message in assertion_explanations
+        )
         replay_result = VerifierReplayResult(
             verifier_run_id=f"verify-{job.id}",
             scan_id=job.scan_id,
@@ -379,6 +416,24 @@ class HttpReplayVerifierExecutor:
             note="HTTP replay executor confirmed the queued verifier job.",
         )
 
+    def _normalized_replay_plan(self, replay_plan: ReplayPlan | None) -> ReplayPlan | None:
+        if replay_plan is None:
+            return None
+
+        replay_plan.mutations = [
+            mutation if isinstance(mutation, ReplayMutationSpec) else ReplayMutationSpec.model_validate(mutation)
+            for mutation in replay_plan.mutations
+        ]
+        replay_plan.assertions = [
+            assertion if isinstance(assertion, ReplayAssertionSpec) else ReplayAssertionSpec.model_validate(assertion)
+            for assertion in replay_plan.assertions
+        ]
+        replay_plan.refresh_requests = [
+            refresh if isinstance(refresh, ReplayRefreshRequestSpec) else ReplayRefreshRequestSpec.model_validate(refresh)
+            for refresh in replay_plan.refresh_requests
+        ]
+        return replay_plan
+
     def _execute_request(
         self,
         request_spec: ReplayRequestSpec,
@@ -387,10 +442,28 @@ class HttpReplayVerifierExecutor:
         plan_actor: str | None,
         mutations: list[ReplayMutationSpec],
         dynamic_headers: dict[str, str],
-    ) -> ReplayHttpResult:
+    ) -> tuple[ReplayHttpResult | None, ReplayHttpResult]:
         base_headers = dict(artifact.request_headers) if artifact is not None else {}
         base_body = _decode_body(artifact.request_body_base64) if artifact is not None else None
         base_path = artifact.path if artifact is not None else request_spec.path
+        has_actor_switch = any(
+            mutation.type == ReplayMutationType.ACTOR_SWITCH
+            and (mutation.target_request_fingerprint is None or mutation.target_request_fingerprint == request_spec.request_fingerprint)
+            for mutation in mutations
+        )
+        baseline_result = None
+        if has_actor_switch:
+            baseline_headers = self.actor_headers.get(request_spec.actor or plan_actor or "", {})
+            merged_baseline_headers = _merge_headers(base_headers, baseline_headers)
+            merged_baseline_headers = _merge_headers(merged_baseline_headers, dynamic_headers)
+            baseline_result = self.transport(
+                request_spec,
+                base_url=self.base_url,
+                timeout_seconds=self.timeout_seconds,
+                verify_tls=self.verify_tls,
+                headers=merged_baseline_headers,
+                body=base_body,
+            )
         request_path, interim_headers, body, actor_key = _apply_mutations(
             request_spec,
             plan_actor=plan_actor,
@@ -403,7 +476,7 @@ class HttpReplayVerifierExecutor:
         merged_headers = _merge_headers(interim_headers, actor_headers)
         merged_headers = _merge_headers(merged_headers, dynamic_headers)
         mutated_request = request_spec.model_copy(update={"path": request_path, "actor": actor_key})
-        return self.transport(
+        return baseline_result, self.transport(
             mutated_request,
             base_url=self.base_url,
             timeout_seconds=self.timeout_seconds,

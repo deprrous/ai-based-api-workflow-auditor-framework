@@ -183,6 +183,8 @@ def test_http_replay_executor_confirms_job_with_replay_plan(client) -> None:
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.mutations = []
+    job.payload.replay_plan.assertions = []
 
     seen_requests: list[tuple[str, bytes | None]] = []
 
@@ -199,6 +201,7 @@ def test_http_replay_executor_confirms_job_with_replay_plan(client) -> None:
             status_code=status_code,
             body_excerpt="ok",
             response_headers={},
+            duration_ms=25,
         )
 
     executor = HttpReplayVerifierExecutor(
@@ -222,6 +225,8 @@ def test_http_replay_executor_returns_unconfirmed_when_target_denies_access(clie
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.mutations = []
+    job.payload.replay_plan.assertions = []
 
     def transport(request_spec, *, base_url, timeout_seconds, verify_tls, headers, body):
         return ReplayHttpResult(
@@ -230,6 +235,7 @@ def test_http_replay_executor_returns_unconfirmed_when_target_denies_access(clie
             status_code=403 if request_spec == job.payload.replay_plan.requests[-1] else 200,
             body_excerpt="forbidden",
             response_headers={},
+            duration_ms=30,
         )
 
     executor = HttpReplayVerifierExecutor(
@@ -281,6 +287,7 @@ def test_replay_artifact_retention_purges_sensitive_material_and_blocks_replay(c
             status_code=200,
             body_excerpt="ok",
             response_headers={},
+            duration_ms=25,
         ),
     )
     outcome = executor.execute(job)
@@ -294,6 +301,7 @@ def test_http_replay_executor_applies_path_body_and_header_mutations(client) -> 
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.assertions = []
 
     job.payload.replay_plan.mutations = [
         ReplayMutationSpec(
@@ -331,6 +339,7 @@ def test_http_replay_executor_applies_path_body_and_header_mutations(client) -> 
             status_code=200,
             body_excerpt="ok",
             response_headers={},
+            duration_ms=35,
         )
 
     executor = HttpReplayVerifierExecutor(
@@ -355,6 +364,8 @@ def test_http_replay_executor_refreshes_session_and_retries(client) -> None:
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.mutations = []
+    job.payload.replay_plan.assertions = []
 
     job.payload.replay_plan.refresh_requests = [
         ReplayRefreshRequestSpec(
@@ -377,6 +388,7 @@ def test_http_replay_executor_refreshes_session_and_retries(client) -> None:
                 status_code=200,
                 body_excerpt="refreshed",
                 response_headers={"Set-Cookie": "session=newsession; Path=/; HttpOnly"},
+                duration_ms=40,
             )
 
         if request_spec.path == "/v1/projects/123":
@@ -388,6 +400,7 @@ def test_http_replay_executor_refreshes_session_and_retries(client) -> None:
                 status_code=status_code,
                 body_excerpt="ok" if status_code == 200 else "unauthorized",
                 response_headers={},
+                duration_ms=45 if status_code == 200 else 20,
             )
 
         return ReplayHttpResult(
@@ -396,6 +409,7 @@ def test_http_replay_executor_refreshes_session_and_retries(client) -> None:
             status_code=200,
             body_excerpt="ok",
             response_headers={},
+            duration_ms=15,
         )
 
     executor = HttpReplayVerifierExecutor(
@@ -408,3 +422,163 @@ def test_http_replay_executor_refreshes_session_and_retries(client) -> None:
     assert outcome.confirmed is True
     assert seen["delete_attempts"] == 2
     assert seen["refresh_attempts"] == 1
+
+
+def test_http_replay_executor_confirms_sqli_with_error_indicator(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+
+    job.title = "SQL injection candidate path"
+    job.payload.vulnerability_class = "sqli"
+    job.payload.replay_plan.mutations = []
+    job.payload.replay_plan.assertions = [
+        {
+            "type": "body_regex",
+            "target_request_fingerprint": "fp-delete",
+            "description": "SQL error should be visible.",
+            "regex_pattern": r"(?i)sql syntax",
+        }
+    ]
+
+    def transport(request_spec, **kwargs):
+        return ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=500,
+            body_excerpt="SQL syntax error near 'UNION'",
+            response_headers={},
+            duration_ms=40,
+        )
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal",
+        actor_headers={"partner-member": {"Authorization": "Bearer token"}},
+        transport=transport,
+    )
+
+    outcome = executor.execute(job)
+    assert outcome.confirmed is True
+    assert outcome.replay_result is not None
+
+
+def test_http_replay_executor_confirms_ssrf_with_metadata_indicator(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+
+    job.title = "SSRF candidate path"
+    job.payload.vulnerability_class = "ssrf"
+    job.payload.replay_plan.mutations = []
+    job.payload.replay_plan.assertions = [
+        {
+            "type": "body_regex",
+            "target_request_fingerprint": "fp-delete",
+            "description": "Internal metadata markers should appear.",
+            "regex_pattern": r"(?i)instance-id|ami-id|latest/meta-data",
+        }
+    ]
+
+    def transport(request_spec, **kwargs):
+        return ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=200,
+            body_excerpt="instance-id: i-1234567890abcdef0",
+            response_headers={},
+            duration_ms=30,
+        )
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal",
+        actor_headers={"partner-member": {"Authorization": "Bearer token"}},
+        transport=transport,
+    )
+
+    outcome = executor.execute(job)
+    assert outcome.confirmed is True
+
+
+def test_http_replay_executor_confirms_reflected_xss_marker(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+
+    job.title = "Reflected XSS candidate path"
+    job.payload.vulnerability_class = "reflected_xss"
+    job.payload.replay_plan.mutations = []
+    job.payload.replay_plan.assertions = [
+        {
+            "type": "body_contains",
+            "target_request_fingerprint": "fp-delete",
+            "description": "Reflected XSS marker should appear.",
+            "expected_text": "auditor-reflected-xss-marker",
+        }
+    ]
+
+    def transport(request_spec, **kwargs):
+        return ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=200,
+            body_excerpt="<html>auditor-reflected-xss-marker</html>",
+            response_headers={},
+            duration_ms=25,
+        )
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal",
+        actor_headers={"partner-member": {"Authorization": "Bearer token"}},
+        transport=transport,
+    )
+
+    outcome = executor.execute(job)
+    assert outcome.confirmed is True
+
+
+def test_http_replay_executor_detects_cross_actor_authorization_drift(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+
+    job.payload.replay_plan.mutations = [
+        ReplayMutationSpec(
+            type="actor_switch",
+            target_request_fingerprint="fp-delete",
+            actor="cross-tenant-actor",
+        )
+    ]
+    job.payload.replay_plan.assertions = [
+        {
+            "type": "status_differs_from_baseline",
+            "target_request_fingerprint": "fp-delete",
+            "description": "Cross-actor status should differ.",
+        }
+    ]
+
+    def transport(request_spec, *, headers, **kwargs):
+        is_cross_actor = headers.get("Authorization") == "Bearer cross-token"
+        return ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=403 if is_cross_actor else 200,
+            body_excerpt="forbidden" if is_cross_actor else "ok",
+            response_headers={},
+            duration_ms=20,
+        )
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal",
+        actor_headers={
+            "partner-member": {"Authorization": "Bearer partner-token"},
+            "cross-tenant-actor": {"Authorization": "Bearer cross-token"},
+        },
+        transport=transport,
+    )
+
+    outcome = executor.execute(job)
+    assert outcome.confirmed is True

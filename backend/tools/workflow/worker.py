@@ -12,7 +12,14 @@ from api.schemas.events import EventSeverity, EventSource, IngestScanEventReques
 from api.schemas.findings import FindingSeverity
 from api.schemas.planner import VerifierStrategy, VulnerabilityClass
 from api.schemas.producer_contracts import WorkflowMapperPathFlaggedContract
-from api.schemas.verifier_jobs import ReplayMutationSpec, ReplayMutationType, ReplayPlan, ReplayRequestSpec
+from api.schemas.verifier_jobs import (
+    ReplayAssertionSpec,
+    ReplayAssertionType,
+    ReplayMutationSpec,
+    ReplayMutationType,
+    ReplayPlan,
+    ReplayRequestSpec,
+)
 from api.schemas.workflows import WorkflowEdge, WorkflowNode, WorkflowNodeStatus, WorkflowNodeType
 
 
@@ -144,6 +151,7 @@ def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | N
         return None
 
     mutations = build_mutations(candidate, replay_requests)
+    assertions = build_assertions(candidate, replay_requests)
 
     success_status_codes = [200, 202, 204]
     if replay_requests[-1].method.upper() in {"DELETE", "PATCH", "PUT"}:
@@ -156,6 +164,7 @@ def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | N
         requests=replay_requests,
         success_status_codes=success_status_codes,
         mutations=mutations,
+        assertions=assertions,
     )
 
 
@@ -184,6 +193,13 @@ def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: li
                     to_value="999999",
                 )
             )
+        mutations.append(
+            ReplayMutationSpec(
+                type=ReplayMutationType.ACTOR_SWITCH,
+                target_request_fingerprint=final_request.request_fingerprint,
+                actor="cross-tenant-actor",
+            )
+        )
 
     if candidate.vulnerability_class == "mass_assignment":
         mutations.extend(
@@ -210,13 +226,20 @@ def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: li
         )
 
     if candidate.vulnerability_class == "bfla":
-        mutations.append(
-            ReplayMutationSpec(
-                type=ReplayMutationType.HEADER_SET,
-                target_request_fingerprint=final_request.request_fingerprint,
-                header_name="X-Permission-Override",
-                value="admin",
-            )
+        mutations.extend(
+            [
+                ReplayMutationSpec(
+                    type=ReplayMutationType.HEADER_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    header_name="X-Permission-Override",
+                    value="admin",
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.ACTOR_SWITCH,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    actor="low-privilege-actor",
+                ),
+            ]
         )
 
     if candidate.vulnerability_class == "unsafe_destructive_action":
@@ -236,7 +259,7 @@ def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: li
                     type=ReplayMutationType.QUERY_SET,
                     target_request_fingerprint=final_request.request_fingerprint,
                     query_param="q",
-                    value="' OR '1'='1",
+                    value="' OR pg_sleep(3)--",
                 ),
                 ReplayMutationSpec(
                     type=ReplayMutationType.QUERY_SET,
@@ -314,6 +337,77 @@ def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: li
         )
 
     return mutations
+
+
+def build_assertions(candidate: WorkflowPathFindingCandidate, replay_requests: list[ReplayRequestSpec]) -> list[ReplayAssertionSpec]:
+    final_request = replay_requests[-1]
+    assertions: list[ReplayAssertionSpec] = []
+
+    if candidate.vulnerability_class in {"bola_idor", "tenant_isolation", "bfla"}:
+        assertions.extend(
+            [
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.STATUS_DIFFERS_FROM_BASELINE,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="Mutated actor should receive a different authorization outcome than the baseline actor.",
+                ),
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.BODY_DIFFERS_FROM_BASELINE,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="Mutated actor response body should differ from the baseline response when access boundaries are crossed.",
+                ),
+            ]
+        )
+
+    if candidate.vulnerability_class == "sqli":
+        assertions.extend(
+            [
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.BODY_REGEX,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="SQL error patterns should appear when injection payloads are unsafely executed.",
+                    regex_pattern=r"(?i)(sql syntax|mysql|postgres|sqlite|odbc|unterminated quoted string|pg_sleep)",
+                ),
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.DURATION_MS_GTE,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="Time-based SQLi payload should delay the response when the backend is injectable.",
+                    threshold_ms=2500,
+                ),
+            ]
+        )
+
+    if candidate.vulnerability_class == "ssrf":
+        assertions.append(
+            ReplayAssertionSpec(
+                type=ReplayAssertionType.BODY_REGEX,
+                target_request_fingerprint=final_request.request_fingerprint,
+                description="SSRF payload should trigger internal metadata or callback-style response markers.",
+                regex_pattern=r"(?i)(latest/meta-data|instance-id|ami-id|localhost|127\.0\.0\.1|attacker\.example\.invalid)",
+            )
+        )
+
+    if candidate.vulnerability_class == "stored_xss":
+        assertions.append(
+            ReplayAssertionSpec(
+                type=ReplayAssertionType.BODY_CONTAINS,
+                target_request_fingerprint=final_request.request_fingerprint,
+                description="Stored XSS marker should appear in a later read response after being written.",
+                expected_text="auditor-stored-xss-marker",
+            )
+        )
+
+    if candidate.vulnerability_class == "reflected_xss":
+        assertions.append(
+            ReplayAssertionSpec(
+                type=ReplayAssertionType.BODY_CONTAINS,
+                target_request_fingerprint=final_request.request_fingerprint,
+                description="Reflected XSS marker should be reflected into the response body.",
+                expected_text="auditor-reflected-xss-marker",
+            )
+        )
+
+    return assertions
 
 
 def build_workflow_mapper_contract(candidate: WorkflowPathFindingCandidate) -> WorkflowMapperPathFlaggedContract:

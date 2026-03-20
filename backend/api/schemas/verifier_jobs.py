@@ -36,6 +36,16 @@ class ReplayMutationType(StrEnum):
     ACTOR_SWITCH = "actor_switch"
 
 
+class ReplayAssertionType(StrEnum):
+    BODY_CONTAINS = "body_contains"
+    BODY_REGEX = "body_regex"
+    HEADER_CONTAINS = "header_contains"
+    STATUS_IN = "status_in"
+    DURATION_MS_GTE = "duration_ms_gte"
+    STATUS_DIFFERS_FROM_BASELINE = "status_differs_from_baseline"
+    BODY_DIFFERS_FROM_BASELINE = "body_differs_from_baseline"
+
+
 class ReplayMutationSpec(BaseModel):
     type: ReplayMutationType
     target_request_fingerprint: str | None = Field(default=None, max_length=120)
@@ -46,6 +56,17 @@ class ReplayMutationSpec(BaseModel):
     query_param: str | None = Field(default=None, max_length=120)
     actor: str | None = Field(default=None, max_length=120)
     value: Any | None = None
+
+
+class ReplayAssertionSpec(BaseModel):
+    type: ReplayAssertionType
+    target_request_fingerprint: str | None = Field(default=None, max_length=120)
+    description: str = Field(min_length=3, max_length=500)
+    expected_text: str | None = Field(default=None, max_length=500)
+    regex_pattern: str | None = Field(default=None, max_length=500)
+    header_name: str | None = Field(default=None, max_length=120)
+    status_codes: list[int] = Field(default_factory=list)
+    threshold_ms: int | None = Field(default=None, ge=0)
 
 
 class ReplayRefreshRequestSpec(BaseModel):
@@ -63,6 +84,7 @@ class ReplayPlan(BaseModel):
     requests: list[ReplayRequestSpec] = Field(default_factory=list)
     success_status_codes: list[int] = Field(default_factory=lambda: [200])
     mutations: list[ReplayMutationSpec] = Field(default_factory=list)
+    assertions: list[ReplayAssertionSpec] = Field(default_factory=list)
     refresh_requests: list[ReplayRefreshRequestSpec] = Field(default_factory=list)
     refresh_on_status_codes: list[int] = Field(default_factory=lambda: [401, 419, 440])
     retry_after_refresh: bool = True
