@@ -17,3 +17,4 @@ This maps directly to the Workflow Mapper tool in the project architecture.
 - it emits stable nodes and edges for suspicious business-flow paths
 - it publishes flagged paths into `POST /api/v1/scans/{scan_id}/events`
 - high-risk flagged paths are then turned into queued verifier jobs by the backend control plane
+- queued verifier jobs now carry replay plans when the workflow candidate came from proxy-derived observations

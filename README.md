@@ -92,6 +92,15 @@ AUDITOR_VERIFIER_AUTORUN_ENABLED=true
 AUDITOR_VERIFIER_AUTORUN_MODE=deterministic-dev
 ```
 
+To use the first real replay executor path instead, configure:
+
+```bash
+AUDITOR_VERIFIER_AUTORUN_ENABLED=true
+AUDITOR_VERIFIER_AUTORUN_MODE=http-replay
+AUDITOR_VERIFIER_REPLAY_BASE_URL=https://target.example.com
+AUDITOR_VERIFIER_REPLAY_ACTOR_HEADERS_JSON={"actor-id":{"Authorization":"Bearer token"}}
+```
+
 ```bash
 cd frontend
 npm install

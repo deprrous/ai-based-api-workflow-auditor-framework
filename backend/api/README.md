@@ -93,6 +93,15 @@ The backend can also process queued verifier jobs automatically in the API proce
 
 `deterministic-dev` is for local pipeline testing only. It exercises the queue and finding lifecycle without pretending to be a production-grade replay engine.
 
+For a real backend replay executor, configure:
+
+- `AUDITOR_VERIFIER_AUTORUN_ENABLED=true`
+- `AUDITOR_VERIFIER_AUTORUN_MODE=http-replay`
+- `AUDITOR_VERIFIER_REPLAY_BASE_URL=https://target.example.com`
+- `AUDITOR_VERIFIER_REPLAY_ACTOR_HEADERS_JSON={"actor-id":{"Authorization":"Bearer token"}}`
+
+The `http-replay` executor uses replay plans attached to queued verifier jobs and performs real HTTP requests against the configured target.
+
 ## Producer contracts
 
 Runtime producers should publish against `GET /api/v1/contracts/runtime-ingest`.

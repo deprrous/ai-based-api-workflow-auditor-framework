@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import json
 import os
 
 DEFAULT_CORS_ORIGINS = (
@@ -35,6 +36,30 @@ def _read_float(value: str | None, default: float) -> float:
         return default
 
 
+def _read_json_object(value: str | None, default: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    if value is None:
+        return default
+
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return default
+
+    if not isinstance(parsed, dict):
+        return default
+
+    normalized: dict[str, dict[str, str]] = {}
+    for key, item in parsed.items():
+        if not isinstance(key, str) or not isinstance(item, dict):
+            continue
+        normalized[key] = {
+            str(header_key): str(header_value)
+            for header_key, header_value in item.items()
+            if isinstance(header_key, str)
+        }
+    return normalized or default
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     app_name: str
@@ -53,6 +78,10 @@ class Settings:
     verifier_autorun_mode: str
     verifier_autorun_poll_interval: float
     verifier_autorun_worker_id: str
+    verifier_replay_base_url: str | None
+    verifier_replay_timeout: float
+    verifier_replay_verify_tls: bool
+    verifier_replay_actor_headers: dict[str, dict[str, str]]
 
 
 @lru_cache
@@ -80,4 +109,8 @@ def get_settings() -> Settings:
         verifier_autorun_mode=os.getenv("AUDITOR_VERIFIER_AUTORUN_MODE", "disabled"),
         verifier_autorun_poll_interval=_read_float(os.getenv("AUDITOR_VERIFIER_AUTORUN_POLL_INTERVAL"), default=2.0),
         verifier_autorun_worker_id=os.getenv("AUDITOR_VERIFIER_AUTORUN_WORKER_ID", "verifier-autorun"),
+        verifier_replay_base_url=os.getenv("AUDITOR_VERIFIER_REPLAY_BASE_URL") or None,
+        verifier_replay_timeout=_read_float(os.getenv("AUDITOR_VERIFIER_REPLAY_TIMEOUT"), default=5.0),
+        verifier_replay_verify_tls=_read_bool(os.getenv("AUDITOR_VERIFIER_REPLAY_VERIFY_TLS"), default=True),
+        verifier_replay_actor_headers=_read_json_object(os.getenv("AUDITOR_VERIFIER_REPLAY_ACTOR_HEADERS_JSON"), default={}),
     )

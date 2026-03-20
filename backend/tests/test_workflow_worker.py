@@ -23,20 +23,36 @@ def _sample_candidate() -> WorkflowPathFindingCandidate:
                 label="GET /v1/projects",
                 phase="read",
                 detail="Partner member lists shared projects.",
+                host="qa.example.internal",
+                path="/v1/projects",
+                method="GET",
+                actor="partner-member",
+                request_fingerprint="fp-projects",
             ),
             WorkflowObservedStep(
                 node_id="members",
                 label="POST /v1/projects/{projectId}/members",
                 phase="action",
                 detail="Partner member invitation path is followed.",
+                host="qa.example.internal",
+                path="/v1/projects/123/members",
+                method="POST",
+                actor="partner-member",
+                request_fingerprint="fp-members",
             ),
             WorkflowObservedStep(
                 node_id="delete-project",
                 label="DELETE /v1/projects/{projectId}",
                 phase="action",
                 detail="Destructive project delete path is reachable from the shared member flow.",
+                host="qa.example.internal",
+                path="/v1/projects/123",
+                method="DELETE",
+                actor="partner-member",
+                request_fingerprint="fp-delete",
             ),
         ],
+        actor="partner-member",
     )
 
 
@@ -50,6 +66,8 @@ def test_workflow_mapper_builds_flagged_path_contract() -> None:
     assert len(contract.nodes) == 4
     assert contract.nodes[-1].type == "observation"
     assert len(contract.edges) == 3
+    assert contract.replay_plan is not None
+    assert len(contract.replay_plan.requests) == 3
     assert request.event_type == "workflow_mapper.path_flagged"
     assert request.source == "workflow_mapper"
 

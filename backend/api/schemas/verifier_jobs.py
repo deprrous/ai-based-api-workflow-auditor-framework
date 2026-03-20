@@ -17,6 +17,20 @@ class VerifierJobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ReplayRequestSpec(BaseModel):
+    request_fingerprint: str = Field(min_length=3, max_length=120)
+    method: str = Field(min_length=2, max_length=16)
+    host: str = Field(min_length=3, max_length=120)
+    path: str = Field(min_length=1, max_length=400)
+    actor: str | None = Field(default=None, max_length=120)
+
+
+class ReplayPlan(BaseModel):
+    actor: str | None = Field(default=None, max_length=120)
+    requests: list[ReplayRequestSpec] = Field(default_factory=list)
+    success_status_codes: list[int] = Field(default_factory=lambda: [200])
+
+
 class VerifierJobPayload(BaseModel):
     path_id: str = Field(min_length=3, max_length=120)
     title: str = Field(min_length=3, max_length=200)
@@ -24,6 +38,7 @@ class VerifierJobPayload(BaseModel):
     workflow_node_ids: list[str] = Field(default_factory=list)
     workflow_nodes: list[WorkflowNode] = Field(default_factory=list)
     workflow_edges: list[WorkflowEdge] = Field(default_factory=list)
+    replay_plan: ReplayPlan | None = None
 
 
 class VerifierJobSummary(BaseModel):

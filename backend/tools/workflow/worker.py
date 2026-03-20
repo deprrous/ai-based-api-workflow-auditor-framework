@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from api.schemas.events import EventSeverity, EventSource, IngestScanEventRequest
 from api.schemas.findings import FindingSeverity
 from api.schemas.producer_contracts import WorkflowMapperPathFlaggedContract
+from api.schemas.verifier_jobs import ReplayPlan, ReplayRequestSpec
 from api.schemas.workflows import WorkflowEdge, WorkflowNode, WorkflowNodeStatus, WorkflowNodeType
 
 
@@ -39,6 +40,11 @@ class WorkflowObservedStep(BaseModel):
     label: str = Field(min_length=3, max_length=200)
     phase: str = Field(min_length=2, max_length=64)
     detail: str = Field(min_length=3, max_length=800)
+    host: str | None = Field(default=None, max_length=120)
+    path: str | None = Field(default=None, max_length=400)
+    method: str | None = Field(default=None, max_length=16)
+    actor: str | None = Field(default=None, max_length=120)
+    request_fingerprint: str | None = Field(default=None, max_length=120)
 
 
 class WorkflowPathFindingCandidate(BaseModel):
@@ -48,6 +54,7 @@ class WorkflowPathFindingCandidate(BaseModel):
     rationale: str = Field(min_length=3, max_length=1500)
     severity: FindingSeverity
     steps: list[WorkflowObservedStep] = Field(min_length=2)
+    actor: str | None = Field(default=None, max_length=120)
     flagged_paths_increment: int = Field(default=1, ge=0)
 
     @model_validator(mode="after")
@@ -112,6 +119,35 @@ def build_path_edges(candidate: WorkflowPathFindingCandidate, nodes: list[Workfl
     return edges
 
 
+def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | None:
+    replay_requests = [
+        ReplayRequestSpec(
+            request_fingerprint=step.request_fingerprint,
+            method=step.method,
+            host=step.host,
+            path=step.path,
+            actor=step.actor or candidate.actor,
+        )
+        for step in candidate.steps
+        if step.request_fingerprint and step.method and step.host and step.path
+    ]
+
+    if not replay_requests:
+        return None
+
+    success_status_codes = [200, 202, 204]
+    if replay_requests[-1].method.upper() in {"DELETE", "PATCH", "PUT"}:
+        success_status_codes = [200, 202, 204]
+    elif replay_requests[-1].method.upper() in {"GET", "HEAD"}:
+        success_status_codes = [200]
+
+    return ReplayPlan(
+        actor=candidate.actor or replay_requests[-1].actor,
+        requests=replay_requests,
+        success_status_codes=success_status_codes,
+    )
+
+
 def build_workflow_mapper_contract(candidate: WorkflowPathFindingCandidate) -> WorkflowMapperPathFlaggedContract:
     nodes = build_path_nodes(candidate)
     edges = build_path_edges(candidate, nodes)
@@ -123,6 +159,7 @@ def build_workflow_mapper_contract(candidate: WorkflowPathFindingCandidate) -> W
         nodes=nodes,
         edges=edges,
         flagged_paths_increment=candidate.flagged_paths_increment,
+        replay_plan=build_replay_plan(candidate),
     )
 
 

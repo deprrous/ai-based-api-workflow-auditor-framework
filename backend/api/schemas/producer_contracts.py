@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from api.schemas.findings import FindingSeverity, FindingUpsert
+from api.schemas.verifier_jobs import ReplayPlan
 from api.schemas.workflows import WorkflowEdge, WorkflowNode
 
 
@@ -41,6 +42,7 @@ class WorkflowMapperPathFlaggedContract(BaseModel):
     nodes: list[WorkflowNode] = Field(default_factory=list)
     edges: list[WorkflowEdge] = Field(default_factory=list)
     flagged_paths_increment: int = Field(default=1, ge=0)
+    replay_plan: ReplayPlan | None = None
 
 
 class VerifierFindingConfirmedContract(BaseModel):

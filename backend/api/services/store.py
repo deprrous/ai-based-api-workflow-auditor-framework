@@ -658,6 +658,33 @@ def _build_partner_seed_verifier_job(scan_id: str) -> VerifierJobRecord:
             WorkflowEdge(source="members", target="keys", label="observed sequence", style="solid", animated=True),
             WorkflowEdge(source="keys", target="path-flag-partner-seed", label="flagged path", style="dashed", animated=True),
         ],
+        replay_plan={
+            "actor": "partner-member",
+            "requests": [
+                {
+                    "request_fingerprint": "seed-projects-read",
+                    "method": "GET",
+                    "host": "qa.example.internal",
+                    "path": "/v1/projects",
+                    "actor": "partner-member",
+                },
+                {
+                    "request_fingerprint": "seed-members-update",
+                    "method": "POST",
+                    "host": "qa.example.internal",
+                    "path": "/v1/projects/123/members",
+                    "actor": "partner-member",
+                },
+                {
+                    "request_fingerprint": "seed-keys-read",
+                    "method": "GET",
+                    "host": "qa.example.internal",
+                    "path": "/v1/projects/123/keys",
+                    "actor": "partner-member",
+                },
+            ],
+            "success_status_codes": [200],
+        },
     )
     return VerifierJobRecord(
         id="job-partner-member-keys",
@@ -874,6 +901,7 @@ def _build_verifier_job_payload(contract: WorkflowMapperPathFlaggedContract) -> 
         workflow_node_ids=endpoint_node_ids,
         workflow_nodes=list(contract.nodes),
         workflow_edges=list(contract.edges),
+        replay_plan=contract.replay_plan,
     )
 
 

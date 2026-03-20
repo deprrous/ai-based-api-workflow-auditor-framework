@@ -115,6 +115,11 @@ def _build_steps(observations: list[ProxyObservation]) -> list[WorkflowObservedS
             label=observation.label,
             phase=observation.phase,
             detail=observation.detail,
+            host=observation.host,
+            path=observation.path,
+            method=observation.method,
+            actor=observation.actor,
+            request_fingerprint=observation.request_fingerprint,
         )
         for observation in observations
     ]
@@ -162,6 +167,7 @@ def build_candidates_from_proxy_events(scan_id: str, events: list[ScanEvent]) ->
                     rationale=rationale,
                     severity=severity,
                     steps=_build_steps(selected),
+                    actor=actor,
                     flagged_paths_increment=1,
                 )
             )

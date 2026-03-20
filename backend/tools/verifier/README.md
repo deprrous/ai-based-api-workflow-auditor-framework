@@ -19,6 +19,16 @@ The backend can optionally start a development-only queued verifier runner.
 
 Do not treat `deterministic-dev` as a production replay engine.
 
+## HTTP replay mode
+
+The verifier runtime also supports a real `http-replay` mode.
+
+- it replays request sequences attached to queued verifier jobs
+- it uses actor-specific headers from backend configuration
+- it confirms findings only when the replayed target responses match the job success criteria
+
+This is the first real replay executor path in the backend.
+
 ## Why this matters
 
 High-accuracy logic-flaw detection cannot rely on vague model output alone.

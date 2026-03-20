@@ -26,11 +26,7 @@ async def lifespan(_: FastAPI):
         scan_service.ensure_seed_data()
 
     if settings.verifier_autorun_enabled:
-        runtime_service = build_runtime_service(
-            mode=settings.verifier_autorun_mode,
-            worker_id=settings.verifier_autorun_worker_id,
-            poll_interval_seconds=settings.verifier_autorun_poll_interval,
-        )
+        runtime_service = build_runtime_service(settings=settings)
         if runtime_service is not None:
             runtime_task = asyncio.create_task(runtime_service.run_forever())
 
