@@ -104,6 +104,20 @@ The `http-replay` executor uses replay plans attached to queued verifier jobs an
 
 Raw replayable request artifacts are stored separately from scan event payloads so workers can reproduce captured POST, PATCH, cookie, and header state more accurately.
 
+Retention policy is now built in:
+
+- artifacts keep replayable raw material for a limited window
+- public artifact APIs always return redacted headers and body previews
+- expired artifacts are purged automatically and become non-replayable
+
+Relevant settings:
+
+- `AUDITOR_REPLAY_ARTIFACT_RETENTION_HOURS`
+- `AUDITOR_REPLAY_ARTIFACT_RETENTION_AUTORUN_ENABLED`
+- `AUDITOR_REPLAY_ARTIFACT_RETENTION_POLL_INTERVAL`
+- `AUDITOR_REPLAY_ARTIFACT_REDACT_HEADERS`
+- `AUDITOR_REPLAY_ARTIFACT_REDACT_BODY_KEYS`
+
 ## Producer contracts
 
 Runtime producers should publish against `GET /api/v1/contracts/runtime-ingest`.

@@ -103,6 +103,8 @@ AUDITOR_VERIFIER_REPLAY_ACTOR_HEADERS_JSON={"actor-id":{"Authorization":"Bearer 
 
 Proxy-derived request artifacts are now persisted separately from scan events so replay executors can reuse stored request headers and bodies with higher fidelity.
 
+Those replay artifacts now also have built-in retention and redaction controls so the backend can keep replay fidelity for a limited window without exposing raw secrets indefinitely.
+
 ```bash
 cd frontend
 npm install

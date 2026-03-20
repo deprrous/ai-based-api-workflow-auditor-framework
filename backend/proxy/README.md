@@ -32,6 +32,8 @@ That allows the backend to update workflow graphs directly from captured target 
 
 The addon now also sends replayable request artifacts so the backend can persist bodies, headers, cookies, and response summaries separately from event payloads.
 
+Those artifacts are later subject to backend redaction and retention policy so sensitive material does not stay replayable forever.
+
 ## Local usage
 
 Install `mitmproxy` as an external tool first.

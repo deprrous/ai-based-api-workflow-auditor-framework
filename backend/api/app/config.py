@@ -82,6 +82,11 @@ class Settings:
     verifier_replay_timeout: float
     verifier_replay_verify_tls: bool
     verifier_replay_actor_headers: dict[str, dict[str, str]]
+    replay_artifact_retention_hours: float
+    replay_artifact_retention_autorun_enabled: bool
+    replay_artifact_retention_poll_interval: float
+    replay_artifact_redact_headers: tuple[str, ...]
+    replay_artifact_redact_body_keys: tuple[str, ...]
 
 
 @lru_cache
@@ -113,4 +118,34 @@ def get_settings() -> Settings:
         verifier_replay_timeout=_read_float(os.getenv("AUDITOR_VERIFIER_REPLAY_TIMEOUT"), default=5.0),
         verifier_replay_verify_tls=_read_bool(os.getenv("AUDITOR_VERIFIER_REPLAY_VERIFY_TLS"), default=True),
         verifier_replay_actor_headers=_read_json_object(os.getenv("AUDITOR_VERIFIER_REPLAY_ACTOR_HEADERS_JSON"), default={}),
+        replay_artifact_retention_hours=_read_float(os.getenv("AUDITOR_REPLAY_ARTIFACT_RETENTION_HOURS"), default=72.0),
+        replay_artifact_retention_autorun_enabled=_read_bool(
+            os.getenv("AUDITOR_REPLAY_ARTIFACT_RETENTION_AUTORUN_ENABLED"),
+            default=True,
+        ),
+        replay_artifact_retention_poll_interval=_read_float(
+            os.getenv("AUDITOR_REPLAY_ARTIFACT_RETENTION_POLL_INTERVAL"),
+            default=300.0,
+        ),
+        replay_artifact_redact_headers=_read_csv(
+            os.getenv("AUDITOR_REPLAY_ARTIFACT_REDACT_HEADERS"),
+            ("authorization", "cookie", "set-cookie", "x-api-key", "api-key", "x-auth-token"),
+        ),
+        replay_artifact_redact_body_keys=_read_csv(
+            os.getenv("AUDITOR_REPLAY_ARTIFACT_REDACT_BODY_KEYS"),
+            (
+                "password",
+                "passwd",
+                "secret",
+                "token",
+                "api_key",
+                "access_token",
+                "refresh_token",
+                "client_secret",
+                "authorization",
+                "cookie",
+                "session",
+                "jwt",
+            ),
+        ),
     )

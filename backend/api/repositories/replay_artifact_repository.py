@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,4 +23,12 @@ class ReplayArtifactRepository:
             select(ReplayArtifactRecord)
             .where(ReplayArtifactRecord.scan_id == scan_id)
             .order_by(ReplayArtifactRecord.created_at.desc(), ReplayArtifactRecord.id.asc())
+        ).all()
+
+    def list_expired(self, *, now: datetime) -> list[ReplayArtifactRecord]:
+        return self.session.scalars(
+            select(ReplayArtifactRecord)
+            .where(ReplayArtifactRecord.expires_at <= now)
+            .where(ReplayArtifactRecord.purged_at.is_(None))
+            .order_by(ReplayArtifactRecord.expires_at.asc(), ReplayArtifactRecord.id.asc())
         ).all()

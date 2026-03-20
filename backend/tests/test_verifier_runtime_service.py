@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta, timezone
 
 from api.app.config import get_settings
+from api.app.database import session_scope
+from api.repositories.replay_artifact_repository import ReplayArtifactRepository
 from api.schemas.verifier_jobs import ClaimVerifierJobRequest, CompleteVerifierJobRequest
+from api.services.replay_artifact_service import replay_artifact_service
 from api.services.verifier_job_service import verifier_job_service
 from api.services.verifier_runtime_service import (
     DeterministicDevVerifierExecutor,
@@ -231,3 +235,47 @@ def test_http_replay_executor_returns_unconfirmed_when_target_denies_access(clie
     assert outcome.confirmed is False
     assert outcome.replay_result is None
     assert "HTTP 403" in outcome.note
+
+
+def test_replay_artifact_retention_purges_sensitive_material_and_blocks_replay(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+    artifact_id = job.payload.replay_plan.requests[1].artifact_id
+    assert artifact_id is not None
+
+    with session_scope() as session:
+        record = ReplayArtifactRepository(session).get(artifact_id)
+        assert record is not None
+        record.expires_at = record.created_at - timedelta(seconds=1)
+
+    purged_count = replay_artifact_service.purge_expired_replay_artifacts()
+    assert purged_count >= 1
+
+    artifact_response = client.get(
+        f"/api/v1/replay-artifacts/{artifact_id}",
+        headers={"X-Auditor-Ingest-Token": "test-ingest-token"},
+    )
+    assert artifact_response.status_code == 200
+    artifact = artifact_response.json()
+    assert artifact["replayable"] is False
+    assert artifact["purged_at"] is not None
+    assert artifact["request_body_preview"] is None
+    assert "authorization" not in {key.lower() for key in artifact["request_headers"]}
+    assert "cookie" not in {key.lower() for key in artifact["request_headers"]}
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal",
+        actor_headers={"partner-member": {"Authorization": "Bearer partner-token"}},
+        transport=lambda request_spec, **kwargs: ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=200,
+            body_excerpt="ok",
+        ),
+    )
+    outcome = executor.execute(job)
+    assert outcome.confirmed is False
+    assert outcome.replay_result is None
+    assert "expired under retention policy" in outcome.note

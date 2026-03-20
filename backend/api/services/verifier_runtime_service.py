@@ -11,7 +11,7 @@ import httpx
 from api.app.config import Settings
 from api.schemas.events import EventSeverity, EventSource, RecordScanEventRequest
 from api.schemas.findings import FindingEvidence, FindingSeverity
-from api.schemas.replay_artifacts import ReplayArtifactDetail
+from api.schemas.replay_artifacts import ReplayArtifactMaterial
 from api.schemas.verifier_jobs import ReplayRequestSpec
 from api.schemas.verifier_jobs import ClaimVerifierJobRequest, CompleteVerifierJobRequest, FailVerifierJobRequest, VerifierJobDetail
 from api.services.event_service import event_service
@@ -166,10 +166,10 @@ class HttpReplayVerifierExecutor:
     verify_tls: bool = True
     transport: Callable[..., ReplayHttpResult] = _default_http_transport
 
-    def _artifact_for_request(self, request_spec: ReplayRequestSpec) -> ReplayArtifactDetail | None:
+    def _artifact_for_request(self, request_spec: ReplayRequestSpec) -> ReplayArtifactMaterial | None:
         if request_spec.artifact_id is None:
             return None
-        return replay_artifact_service.get_replay_artifact(request_spec.artifact_id)
+        return replay_artifact_service.get_replay_artifact_material(request_spec.artifact_id)
 
     def execute(self, job: VerifierJobDetail) -> VerifierExecutionOutcome:
         replay_plan = job.payload.replay_plan
@@ -182,10 +182,27 @@ class HttpReplayVerifierExecutor:
 
         actor_key = replay_plan.actor or (replay_plan.requests[-1].actor if replay_plan.requests else None)
         actor_headers = self.actor_headers.get(actor_key or "", {})
-        response_results = [
-            self._execute_request(request_spec, actor_headers)
-            for request_spec in replay_plan.requests
-        ]
+        response_results: list[ReplayHttpResult] = []
+        for request_spec in replay_plan.requests:
+            artifact = self._artifact_for_request(request_spec)
+            if request_spec.artifact_id is not None and artifact is not None and not artifact.replayable:
+                return VerifierExecutionOutcome(
+                    confirmed=False,
+                    replay_result=None,
+                    note=(
+                        f"Replay artifact {artifact.id} expired under retention policy before the verifier job could be replayed."
+                    ),
+                )
+            if request_spec.artifact_id is not None and artifact is None:
+                return VerifierExecutionOutcome(
+                    confirmed=False,
+                    replay_result=None,
+                    note=(
+                        f"Replay artifact {request_spec.artifact_id} is missing for request fingerprint {request_spec.request_fingerprint}."
+                    ),
+                )
+
+            response_results.append(self._execute_request(request_spec, actor_headers, artifact))
         final_result = response_results[-1]
         if final_result.status_code not in replay_plan.success_status_codes:
             return VerifierExecutionOutcome(
@@ -240,8 +257,12 @@ class HttpReplayVerifierExecutor:
             note="HTTP replay executor confirmed the queued verifier job.",
         )
 
-    def _execute_request(self, request_spec: ReplayRequestSpec, actor_headers: dict[str, str]) -> ReplayHttpResult:
-        artifact = self._artifact_for_request(request_spec)
+    def _execute_request(
+        self,
+        request_spec: ReplayRequestSpec,
+        actor_headers: dict[str, str],
+        artifact: ReplayArtifactMaterial | None,
+    ) -> ReplayHttpResult:
         base_headers = dict(artifact.request_headers) if artifact is not None else {}
         merged_headers = _merge_headers(base_headers, actor_headers)
         body = _decode_body(artifact.request_body_base64) if artifact is not None else None

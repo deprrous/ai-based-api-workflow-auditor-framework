@@ -86,6 +86,9 @@ def test_proxy_contract_event_updates_scan_workflow_consistently(client):
     artifact = artifact_response.json()
     assert artifact["request_fingerprint"] == "fp-delete-project"
     assert artifact["method"] == "DELETE"
+    assert artifact["request_headers"]["Content-Type"] == "application/json"
+    assert artifact["request_headers"]["Cookie"] == "session=[REDACTED]"
+    assert artifact["request_body_preview"] == '{"delete":true}'
 
 
 def test_verifier_contract_creates_confirmed_finding(client):

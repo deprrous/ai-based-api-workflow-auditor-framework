@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from api.app.config import get_settings
 from api.app.database import session_scope
 from api.app.db_models import FindingRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
 from api.repositories.event_repository import EventRepository
@@ -28,7 +29,8 @@ from api.schemas.events import (
 )
 from api.schemas.findings import ContextReference, FindingDetail, FindingEvidence, FindingSeverity, FindingStatus, FindingSummary, FindingUpsert
 from api.schemas.producer_contracts import ProxyHttpObservedContract, VerifierFindingConfirmedContract, WorkflowMapperPathFlaggedContract
-from api.schemas.replay_artifacts import ReplayArtifactDetail
+from api.schemas.replay_artifacts import ReplayArtifactDetail, ReplayArtifactMaterial
+from api.services.replay_artifact_policy import redact_headers, redact_response_excerpt
 from api.schemas.scans import ScanRisk, ScanRunSummary, ScanStatus, StartScanRequest
 from api.schemas.verifier_jobs import (
     ClaimVerifierJobRequest,
@@ -163,8 +165,8 @@ def _event_record_to_model(record: ScanEventRecord) -> ScanEvent:
     )
 
 
-def _replay_artifact_record_to_detail(record: ReplayArtifactRecord) -> ReplayArtifactDetail:
-    return ReplayArtifactDetail(
+def _replay_artifact_record_to_material(record: ReplayArtifactRecord) -> ReplayArtifactMaterial:
+    return ReplayArtifactMaterial(
         id=record.id,
         scan_id=record.scan_id,
         request_fingerprint=record.request_fingerprint,
@@ -178,6 +180,9 @@ def _replay_artifact_record_to_detail(record: ReplayArtifactRecord) -> ReplayArt
         response_status_code=record.response_status_code,
         response_headers=dict(record.response_headers_json),
         response_body_excerpt=record.response_body_excerpt,
+        replayable=record.purged_at is None,
+        expires_at=record.expires_at,
+        purged_at=record.purged_at,
         created_at=record.created_at,
     )
 
@@ -307,6 +312,7 @@ def _upsert_replay_artifact(
 ) -> ReplayArtifactRecord:
     repository = ReplayArtifactRepository(session)
     artifact_id = f"artifact-{uuid4().hex[:12]}"
+    retention_hours = max(0.0, get_settings().replay_artifact_retention_hours)
     record = ReplayArtifactRecord(
         id=artifact_id,
         scan_id=scan_id,
@@ -321,6 +327,8 @@ def _upsert_replay_artifact(
         response_status_code=artifact_input.response_status_code,
         response_headers_json=dict(artifact_input.response_headers),
         response_body_excerpt=artifact_input.response_body_excerpt,
+        expires_at=now + timedelta(hours=retention_hours),
+        purged_at=None,
         created_at=now,
     )
     repository.add(record)
@@ -1282,15 +1290,38 @@ class AuditStore:
             record = VerifierJobRepository(session).get(verifier_job_id)
             return _verifier_job_record_to_detail(record) if record else None
 
-    def get_replay_artifact(self, artifact_id: str) -> ReplayArtifactDetail | None:
+    def get_replay_artifact_material(self, artifact_id: str) -> ReplayArtifactMaterial | None:
         with session_scope() as session:
             record = ReplayArtifactRepository(session).get(artifact_id)
-            return _replay_artifact_record_to_detail(record) if record else None
+            return _replay_artifact_record_to_material(record) if record else None
 
-    def list_replay_artifacts(self, scan_id: str) -> list[ReplayArtifactDetail]:
+    def list_replay_artifact_materials(self, scan_id: str) -> list[ReplayArtifactMaterial]:
         with session_scope() as session:
             records = ReplayArtifactRepository(session).list_for_scan(scan_id)
-            return [_replay_artifact_record_to_detail(record) for record in records]
+            return [_replay_artifact_record_to_material(record) for record in records]
+
+    def purge_expired_replay_artifacts(self, *, now: datetime | None = None) -> int:
+        with session_scope() as session:
+            effective_now = now or _utc_now()
+            settings = get_settings()
+            records = ReplayArtifactRepository(session).list_expired(now=effective_now)
+            for record in records:
+                record.request_headers_json = redact_headers(
+                    dict(record.request_headers_json),
+                    settings.replay_artifact_redact_headers,
+                )
+                record.response_headers_json = redact_headers(
+                    dict(record.response_headers_json),
+                    settings.replay_artifact_redact_headers,
+                )
+                record.request_body_base64 = None
+                record.response_body_excerpt = redact_response_excerpt(
+                    record.response_body_excerpt,
+                    sensitive_body_keys=settings.replay_artifact_redact_body_keys,
+                    limit=4000,
+                )
+                record.purged_at = effective_now
+            return len(records)
 
     def claim_verifier_job(self, payload: ClaimVerifierJobRequest) -> VerifierJobDetail | None:
         with session_scope() as session:

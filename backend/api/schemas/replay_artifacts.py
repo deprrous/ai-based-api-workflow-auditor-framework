@@ -23,9 +23,32 @@ class ReplayArtifactDetail(BaseModel):
     host: str
     path: str
     request_headers: dict[str, str]
+    request_body_preview: str | None = None
+    request_content_type: str | None = None
+    response_status_code: int | None = None
+    response_headers: dict[str, str]
+    response_body_excerpt: str | None = None
+    replayable: bool
+    expires_at: datetime
+    purged_at: datetime | None = None
+    created_at: datetime
+
+
+class ReplayArtifactMaterial(BaseModel):
+    id: str
+    scan_id: str
+    request_fingerprint: str
+    actor: str | None = None
+    method: str
+    host: str
+    path: str
+    request_headers: dict[str, str]
     request_body_base64: str | None = None
     request_content_type: str | None = None
     response_status_code: int | None = None
     response_headers: dict[str, str]
     response_body_excerpt: str | None = None
+    replayable: bool
+    expires_at: datetime
+    purged_at: datetime | None = None
     created_at: datetime

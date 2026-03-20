@@ -91,6 +91,8 @@ class ReplayArtifactRecord(Base):
     response_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_headers_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
     response_body_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 

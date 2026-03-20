@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.app.config import get_settings
 from api.app.database import init_database
 from api.routers import contracts, findings, health, planner, replay_artifacts, reports, scans, service_accounts, verifier_jobs, verifier_runs, workflows
+from api.services.replay_artifact_service import build_retention_service
 from api.services.scan_service import scan_service
 from api.services.verifier_runtime_service import build_runtime_service
 
@@ -16,6 +17,8 @@ from api.services.verifier_runtime_service import build_runtime_service
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
+    retention_service = None
+    retention_task = None
     runtime_service = None
     runtime_task = None
 
@@ -25,12 +28,23 @@ async def lifespan(_: FastAPI):
     if settings.seed_data:
         scan_service.ensure_seed_data()
 
+    retention_service = build_retention_service(settings=settings)
+    if retention_service is not None:
+        retention_service.run_once()
+        retention_task = asyncio.create_task(retention_service.run_forever())
+
     if settings.verifier_autorun_enabled:
         runtime_service = build_runtime_service(settings=settings)
         if runtime_service is not None:
             runtime_task = asyncio.create_task(runtime_service.run_forever())
 
     yield
+
+    if retention_service is not None:
+        retention_service.stop()
+
+    if retention_task is not None:
+        await retention_task
 
     if runtime_service is not None:
         runtime_service.stop()
