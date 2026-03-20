@@ -9,6 +9,16 @@ This package holds verifier-side workers and replay-result helpers.
 - it publishes findings into `POST /api/v1/scans/{scan_id}/events`
 - it can also claim, complete, and fail queued verifier jobs through the backend job APIs
 
+## Development autorun
+
+The backend can optionally start a development-only queued verifier runner.
+
+- it claims queued verifier jobs automatically
+- it uses a deterministic development executor
+- it exists to validate the orchestration pipeline locally
+
+Do not treat `deterministic-dev` as a production replay engine.
+
 ## Why this matters
 
 High-accuracy logic-flaw detection cannot rely on vague model output alone.

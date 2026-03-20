@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,11 +10,14 @@ from api.app.config import get_settings
 from api.app.database import init_database
 from api.routers import contracts, findings, health, planner, reports, scans, service_accounts, verifier_jobs, verifier_runs, workflows
 from api.services.scan_service import scan_service
+from api.services.verifier_runtime_service import build_runtime_service
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
+    runtime_service = None
+    runtime_task = None
 
     if settings.database_auto_create:
         init_database()
@@ -21,7 +25,22 @@ async def lifespan(_: FastAPI):
     if settings.seed_data:
         scan_service.ensure_seed_data()
 
+    if settings.verifier_autorun_enabled:
+        runtime_service = build_runtime_service(
+            mode=settings.verifier_autorun_mode,
+            worker_id=settings.verifier_autorun_worker_id,
+            poll_interval_seconds=settings.verifier_autorun_poll_interval,
+        )
+        if runtime_service is not None:
+            runtime_task = asyncio.create_task(runtime_service.run_forever())
+
     yield
+
+    if runtime_service is not None:
+        runtime_service.stop()
+
+    if runtime_task is not None:
+        await runtime_task
 
 
 def create_app() -> FastAPI:

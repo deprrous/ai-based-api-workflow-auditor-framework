@@ -85,6 +85,13 @@ alembic -c backend/alembic.ini upgrade head
 uvicorn api.app.main:app --reload --app-dir backend --env-file backend/.env
 ```
 
+To exercise the queued verifier pipeline locally, you can enable the development autorunner in `backend/.env`:
+
+```bash
+AUDITOR_VERIFIER_AUTORUN_ENABLED=true
+AUDITOR_VERIFIER_AUTORUN_MODE=deterministic-dev
+```
+
 ```bash
 cd frontend
 npm install

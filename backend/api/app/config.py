@@ -49,6 +49,10 @@ class Settings:
     sse_poll_interval: float
     ingest_tokens: tuple[str, ...]
     admin_tokens: tuple[str, ...]
+    verifier_autorun_enabled: bool
+    verifier_autorun_mode: str
+    verifier_autorun_poll_interval: float
+    verifier_autorun_worker_id: str
 
 
 @lru_cache
@@ -72,4 +76,8 @@ def get_settings() -> Settings:
         sse_poll_interval=_read_float(os.getenv("AUDITOR_SSE_POLL_INTERVAL"), default=1.0),
         ingest_tokens=_read_csv(os.getenv("AUDITOR_INGEST_TOKENS"), tuple()),
         admin_tokens=_read_csv(os.getenv("AUDITOR_ADMIN_TOKENS"), tuple()),
+        verifier_autorun_enabled=_read_bool(os.getenv("AUDITOR_VERIFIER_AUTORUN_ENABLED"), default=False),
+        verifier_autorun_mode=os.getenv("AUDITOR_VERIFIER_AUTORUN_MODE", "disabled"),
+        verifier_autorun_poll_interval=_read_float(os.getenv("AUDITOR_VERIFIER_AUTORUN_POLL_INTERVAL"), default=2.0),
+        verifier_autorun_worker_id=os.getenv("AUDITOR_VERIFIER_AUTORUN_WORKER_ID", "verifier-autorun"),
     )

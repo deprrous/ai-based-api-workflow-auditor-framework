@@ -82,6 +82,17 @@ Verifier job worker endpoints accept either:
 
 Service accounts should include `run:verifier_jobs` when a worker must claim, retry, or complete queued verifier jobs.
 
+## Automatic verifier runner
+
+The backend can also process queued verifier jobs automatically in the API process for development.
+
+- `AUDITOR_VERIFIER_AUTORUN_ENABLED=true`
+- `AUDITOR_VERIFIER_AUTORUN_MODE=deterministic-dev`
+- `AUDITOR_VERIFIER_AUTORUN_POLL_INTERVAL=2.0`
+- `AUDITOR_VERIFIER_AUTORUN_WORKER_ID=verifier-autorun`
+
+`deterministic-dev` is for local pipeline testing only. It exercises the queue and finding lifecycle without pretending to be a production-grade replay engine.
+
 ## Producer contracts
 
 Runtime producers should publish against `GET /api/v1/contracts/runtime-ingest`.
