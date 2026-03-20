@@ -121,6 +121,8 @@ Current replay assertion and response analysis support includes:
 - stored/reflected XSS marker confirmation
 - cross-actor authorization drift comparison
 
+Out-of-band callback support is now available through callback expectations and public callback capture endpoints.
+
 Raw replayable request artifacts are stored separately from scan event payloads so workers can reproduce captured POST, PATCH, cookie, and header state more accurately.
 
 Retention policy is now built in:
@@ -162,6 +164,8 @@ The workflow planner can now consume persisted `proxy.http_observed` events and 
 
 It can also enrich planned paths with matching ingested source-code and OpenAPI artifact context.
 
+Source-code artifacts now also expose taint-style source/sink correlation so runtime paths can be supported by stronger code-review hypotheses.
+
 Current explicit coverage classes in the backend planner:
 
 - `bola_idor`
@@ -195,6 +199,9 @@ Planner outputs now carry:
 - `POST /api/v1/artifacts/scan/{scan_id}/api-spec` - ingest OpenAPI or Swagger content.
 - `GET /api/v1/artifacts/scan/{scan_id}` - list ingested artifacts for a scan.
 - `GET /api/v1/artifacts/{artifact_id}` - read artifact detail and parsed summary.
+- `GET /api/v1/callbacks/scan/{scan_id}` - list callback expectations for a scan.
+- `GET /api/v1/callbacks/token/{token}` - read callback expectation detail.
+- `GET /api/v1/callbacks/public/{token}` - public callback endpoint for SSRF/XSS confirmation.
 - `GET /api/v1/scans/{scan_id}/findings` - list findings for a single scan run.
 - `GET /api/v1/scans/{scan_id}/report` - export a scan-level report payload.
 - `GET /api/v1/scans/{scan_id}/evidence-bundle` - export detailed finding evidence for the scan.

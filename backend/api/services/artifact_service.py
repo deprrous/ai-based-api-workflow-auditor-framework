@@ -15,6 +15,7 @@ from api.schemas.artifacts import (
     ArtifactMatchReference,
     ArtifactRiskCategory,
     ArtifactRiskIndicatorSummary,
+    ArtifactTaintFlowSummary,
     ArtifactSummary,
     SourceArtifactIngestRequest,
 )
@@ -55,6 +56,11 @@ def _to_detail(record: ScanArtifactRecord) -> ArtifactDetail:
         risk_indicators=[
             ArtifactRiskIndicatorSummary.model_validate(item)
             for item in record.parsed_summary_json.get("risk_indicators", [])
+            if isinstance(item, dict)
+        ],
+        taint_flows=[
+            ArtifactTaintFlowSummary.model_validate(item)
+            for item in record.parsed_summary_json.get("taint_flows", [])
             if isinstance(item, dict)
         ],
     )
@@ -146,16 +152,23 @@ class ArtifactService:
             references: list[ArtifactMatchReference] = []
             normalized_path = parse.urlsplit(path).path or path
             for record in records:
-                references.extend(
-                    build_artifact_match_references(
-                        artifact_id=record.id,
-                        artifact_name=record.name,
-                        kind=ArtifactKind(record.kind),
-                        parsed_summary=record.parsed_summary_json,
-                        method=method,
-                        path=normalized_path,
-                    )
+                new_references = build_artifact_match_references(
+                    artifact_id=record.id,
+                    artifact_name=record.name,
+                    kind=ArtifactKind(record.kind),
+                    parsed_summary=record.parsed_summary_json,
+                    method=method,
+                    path=normalized_path,
                 )
+                for reference in new_references:
+                    reference.taint_flows = [
+                        ArtifactTaintFlowSummary.model_validate(item)
+                        for item in record.parsed_summary_json.get("taint_flows", [])
+                        if isinstance(item, dict)
+                        and (item.get("route_method") in {None, method.upper()})
+                        and (item.get("route_path") in {None, normalized_path})
+                    ]
+                references.extend(new_references)
             return references
 
     def route_risk_lookup(self, scan_id: str) -> dict[tuple[str, str], list[ArtifactRiskIndicatorSummary]]:

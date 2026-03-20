@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.app.config import get_settings
 from api.app.database import init_database
-from api.routers import ai, artifacts, contracts, findings, health, planner, replay_artifacts, reports, scans, service_accounts, verifier_jobs, verifier_runs, workflows
+from api.routers import ai, artifacts, callbacks, contracts, findings, health, planner, replay_artifacts, reports, scans, service_accounts, verifier_jobs, verifier_runs, workflows
+from api.services.callback_service import CallbackRetentionService
 from api.services.replay_artifact_service import build_retention_service
 from api.services.scan_service import scan_service
 from api.services.verifier_runtime_service import build_runtime_service
@@ -32,6 +33,8 @@ async def lifespan(_: FastAPI):
     if retention_service is not None:
         retention_service.run_once()
         retention_task = asyncio.create_task(retention_service.run_forever())
+
+    CallbackRetentionService().run_once()
 
     if settings.verifier_autorun_enabled:
         runtime_service = build_runtime_service(settings=settings)
@@ -91,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(ai.router, prefix=settings.api_prefix)
     app.include_router(scans.router, prefix=settings.api_prefix)
     app.include_router(artifacts.router, prefix=settings.api_prefix)
+    app.include_router(callbacks.router, prefix=settings.api_prefix)
     app.include_router(contracts.router, prefix=settings.api_prefix)
     app.include_router(findings.router, prefix=settings.api_prefix)
     app.include_router(planner.router, prefix=settings.api_prefix)

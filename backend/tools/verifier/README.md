@@ -28,6 +28,12 @@ The verifier runtime also supports a real `http-replay` mode.
 - it confirms findings only when the replayed target responses match the job success criteria
 - it supports mutation strategies for path ids, body fields, role/permission headers, actor switching, and refresh-driven retries
 
+## Callback and assertion support
+
+- replay plans can now create callback expectations for SSRF and browser-style XSS confirmation flows
+- the verifier can consume callback evidence through public callback capture endpoints
+- response analyzers can confirm findings through body markers, regex matches, timing thresholds, and cross-actor authorization drift
+
 This is the first real replay executor path in the backend.
 
 ## Why this matters

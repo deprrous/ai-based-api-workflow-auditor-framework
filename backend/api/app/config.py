@@ -92,6 +92,8 @@ class Settings:
     ai_openai_compatible_api_key: str | None
     ai_openai_compatible_model: str | None
     ai_openai_compatible_verify_tls: bool
+    callback_public_base_url: str
+    callback_expectation_ttl_seconds: int
 
 
 @lru_cache
@@ -161,4 +163,9 @@ def get_settings() -> Settings:
             os.getenv("AUDITOR_AI_OPENAI_COMPATIBLE_VERIFY_TLS"),
             default=True,
         ),
+        callback_public_base_url=os.getenv(
+            "AUDITOR_CALLBACK_PUBLIC_BASE_URL",
+            "http://127.0.0.1:8000/api/v1/callbacks/public",
+        ),
+        callback_expectation_ttl_seconds=int(os.getenv("AUDITOR_CALLBACK_EXPECTATION_TTL_SECONDS", "120")),
     )

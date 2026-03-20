@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 
 from api.app.config import get_settings
 from api.app.database import session_scope
-from api.app.db_models import FindingRecord, PlanningRunRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
+from api.app.db_models import CallbackEventRecord, CallbackExpectationRecord, FindingRecord, PlanningRunRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
+from api.repositories.callback_repository import CallbackRepository
 from api.repositories.event_repository import EventRepository
 from api.repositories.finding_repository import FindingRepository
 from api.repositories.planning_run_repository import PlanningRunRepository
@@ -30,6 +31,7 @@ from api.schemas.events import (
 )
 from api.schemas.findings import ContextReference, FindingDetail, FindingEvidence, FindingSeverity, FindingStatus, FindingSummary, FindingUpsert
 from api.schemas.ai import AiPlanningProposal
+from api.schemas.callbacks import CallbackEventDetail, CallbackExpectationDetail, CallbackExpectationStatus, CallbackExpectationSummary, CallbackKind
 from api.schemas.producer_contracts import ProxyHttpObservedContract, VerifierFindingConfirmedContract, WorkflowMapperPathFlaggedContract
 from api.schemas.planner import PlannerCandidateSummary
 from api.schemas.planning_runs import PlanningMode, PlanningRunDetail, PlanningRunSummary
@@ -188,6 +190,55 @@ def _replay_artifact_record_to_material(record: ReplayArtifactRecord) -> ReplayA
         expires_at=record.expires_at,
         purged_at=record.purged_at,
         created_at=record.created_at,
+    )
+
+
+def _callback_event_record_to_detail(record: CallbackEventRecord) -> CallbackEventDetail:
+    return CallbackEventDetail(
+        id=record.id,
+        expectation_id=record.expectation_id,
+        method=record.method,
+        path=record.path,
+        query_string=record.query_string,
+        headers=dict(record.headers_json),
+        body_excerpt=record.body_excerpt,
+        source_ip=record.source_ip,
+        user_agent=record.user_agent,
+        created_at=record.created_at,
+    )
+
+
+def _callback_expectation_record_to_summary(record: CallbackExpectationRecord, *, callback_public_base_url: str, event_count: int) -> CallbackExpectationSummary:
+    return CallbackExpectationSummary(
+        id=record.id,
+        scan_id=record.scan_id,
+        verifier_job_id=record.verifier_job_id,
+        token=record.token,
+        kind=CallbackKind(record.kind),
+        label=record.label,
+        status=CallbackExpectationStatus(record.status),
+        callback_url=f"{callback_public_base_url.rstrip('/')}/{record.token}",
+        event_count=event_count,
+        created_at=record.created_at,
+        expires_at=record.expires_at,
+        received_at=record.received_at,
+    )
+
+
+def _callback_expectation_record_to_detail(
+    record: CallbackExpectationRecord,
+    *,
+    callback_public_base_url: str,
+    events: list[CallbackEventRecord],
+) -> CallbackExpectationDetail:
+    summary = _callback_expectation_record_to_summary(
+        record,
+        callback_public_base_url=callback_public_base_url,
+        event_count=len(events),
+    )
+    return CallbackExpectationDetail(
+        **summary.model_dump(),
+        events=[_callback_event_record_to_detail(event) for event in events],
     )
 
 
@@ -1364,6 +1415,121 @@ class AuditStore:
                     limit=4000,
                 )
                 record.purged_at = effective_now
+            return len(records)
+
+    def create_callback_expectation(
+        self,
+        *,
+        scan_id: str,
+        verifier_job_id: str | None,
+        kind: CallbackKind,
+        label: str,
+        ttl_seconds: int,
+    ) -> CallbackExpectationDetail | None:
+        with session_scope() as session:
+            if ScanRepository(session).get(scan_id) is None:
+                return None
+
+            now = _utc_now()
+            record = CallbackExpectationRecord(
+                id=f"callback-{uuid4().hex[:12]}",
+                scan_id=scan_id,
+                verifier_job_id=verifier_job_id,
+                token=uuid4().hex,
+                kind=kind.value,
+                label=label,
+                status=CallbackExpectationStatus.PENDING.value,
+                created_at=now,
+                expires_at=now + timedelta(seconds=ttl_seconds),
+                received_at=None,
+            )
+            repository = CallbackRepository(session)
+            repository.add_expectation(record)
+            session.flush()
+            session.refresh(record)
+            return _callback_expectation_record_to_detail(
+                record,
+                callback_public_base_url=get_settings().callback_public_base_url,
+                events=[],
+            )
+
+    def get_callback_expectation_by_token(self, token: str) -> CallbackExpectationDetail | None:
+        with session_scope() as session:
+            repository = CallbackRepository(session)
+            record = repository.get_expectation_by_token(token)
+            if record is None:
+                return None
+            events = repository.list_events_for_expectation(record.id)
+            return _callback_expectation_record_to_detail(
+                record,
+                callback_public_base_url=get_settings().callback_public_base_url,
+                events=events,
+            )
+
+    def record_callback_event(
+        self,
+        *,
+        token: str,
+        method: str,
+        path: str,
+        query_string: str | None,
+        headers: dict[str, str],
+        body_excerpt: str | None,
+        source_ip: str | None,
+        user_agent: str | None,
+    ) -> CallbackExpectationDetail | None:
+        with session_scope() as session:
+            repository = CallbackRepository(session)
+            record = repository.get_expectation_by_token(token)
+            if record is None:
+                return None
+
+            now = _utc_now()
+            event_record = CallbackEventRecord(
+                expectation_id=record.id,
+                method=method.upper(),
+                path=path,
+                query_string=query_string,
+                headers_json=headers,
+                body_excerpt=body_excerpt,
+                source_ip=source_ip,
+                user_agent=user_agent,
+                created_at=now,
+            )
+            repository.add_event(event_record)
+            record.status = CallbackExpectationStatus.RECEIVED.value
+            record.received_at = now
+            session.flush()
+            events = repository.list_events_for_expectation(record.id)
+            return _callback_expectation_record_to_detail(
+                record,
+                callback_public_base_url=get_settings().callback_public_base_url,
+                events=events,
+            )
+
+    def list_callback_expectations(self, scan_id: str) -> list[CallbackExpectationSummary]:
+        with session_scope() as session:
+            repository = CallbackRepository(session)
+            records = repository.list_expectations_for_scan(scan_id)
+            summaries: list[CallbackExpectationSummary] = []
+            for record in records:
+                event_count = len(repository.list_events_for_expectation(record.id))
+                summaries.append(
+                    _callback_expectation_record_to_summary(
+                        record,
+                        callback_public_base_url=get_settings().callback_public_base_url,
+                        event_count=event_count,
+                    )
+                )
+            return summaries
+
+    def expire_callback_expectations(self, *, now: datetime | None = None) -> int:
+        with session_scope() as session:
+            effective_now = now or _utc_now()
+            repository = CallbackRepository(session)
+            records = repository.list_expired_pending_expectations(now=effective_now)
+            for record in records:
+                record.status = CallbackExpectationStatus.EXPIRED.value
             return len(records)
 
     def create_planning_run(

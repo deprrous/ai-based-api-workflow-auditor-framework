@@ -283,19 +283,19 @@ def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: li
                     type=ReplayMutationType.QUERY_SET,
                     target_request_fingerprint=final_request.request_fingerprint,
                     query_param="url",
-                    value="http://169.254.169.254/latest/meta-data/",
+                    value="{{callback_url:ssrf_oob}}",
                 ),
                 ReplayMutationSpec(
                     type=ReplayMutationType.BODY_JSON_SET,
                     target_request_fingerprint=final_request.request_fingerprint,
                     body_field="url",
-                    value="http://169.254.169.254/latest/meta-data/",
+                    value="{{callback_url:ssrf_oob}}",
                 ),
                 ReplayMutationSpec(
                     type=ReplayMutationType.BODY_JSON_SET,
                     target_request_fingerprint=final_request.request_fingerprint,
                     body_field="callback_url",
-                    value="https://attacker.example.invalid/hook",
+                    value="{{callback_url:ssrf_oob}}",
                 ),
             ]
         )
@@ -307,13 +307,13 @@ def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: li
                     type=ReplayMutationType.BODY_JSON_SET,
                     target_request_fingerprint=final_request.request_fingerprint,
                     body_field="content",
-                    value="<script>alert('stored-xss')</script>",
+                    value="{{xss_callback:stored_xss_oob}}",
                 ),
                 ReplayMutationSpec(
                     type=ReplayMutationType.BODY_JSON_SET,
                     target_request_fingerprint=final_request.request_fingerprint,
                     body_field="message",
-                    value="<img src=x onerror=alert('stored-xss')>",
+                    value="{{xss_callback:stored_xss_oob}}",
                 ),
             ]
         )
@@ -325,13 +325,13 @@ def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: li
                     type=ReplayMutationType.QUERY_SET,
                     target_request_fingerprint=final_request.request_fingerprint,
                     query_param="q",
-                    value="<script>alert('reflected-xss')</script>",
+                    value="{{xss_callback:reflected_xss_oob}}",
                 ),
                 ReplayMutationSpec(
                     type=ReplayMutationType.QUERY_SET,
                     target_request_fingerprint=final_request.request_fingerprint,
                     query_param="search",
-                    value="<svg/onload=alert('reflected-xss')>",
+                    value="{{xss_callback:reflected_xss_oob}}",
                 ),
             ]
         )
@@ -378,13 +378,22 @@ def build_assertions(candidate: WorkflowPathFindingCandidate, replay_requests: l
         )
 
     if candidate.vulnerability_class == "ssrf":
-        assertions.append(
-            ReplayAssertionSpec(
-                type=ReplayAssertionType.BODY_REGEX,
-                target_request_fingerprint=final_request.request_fingerprint,
-                description="SSRF payload should trigger internal metadata or callback-style response markers.",
-                regex_pattern=r"(?i)(latest/meta-data|instance-id|ami-id|localhost|127\.0\.0\.1|attacker\.example\.invalid)",
-            )
+        assertions.extend(
+            [
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.BODY_REGEX,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="SSRF payload should trigger internal metadata or callback-style response markers.",
+                    regex_pattern=r"(?i)(latest/meta-data|instance-id|ami-id|localhost|127\.0\.0\.1)",
+                ),
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.CALLBACK_RECEIVED,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="SSRF out-of-band callback should reach the framework callback endpoint.",
+                    callback_label="ssrf_oob",
+                    wait_seconds=2,
+                ),
+            ]
         )
 
     if candidate.vulnerability_class == "stored_xss":

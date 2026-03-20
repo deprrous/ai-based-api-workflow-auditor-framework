@@ -23,12 +23,14 @@ def test_source_and_api_spec_artifact_ingestion(client):
     assert source_artifact["kind"] == "source_code"
     assert source_artifact["route_count"] == 1
     assert source_artifact["risk_indicator_count"] >= 2
+    assert source_artifact["taint_flow_count"] >= 1
 
     source_detail_response = client.get(f"/api/v1/artifacts/{source_artifact['id']}")
     assert source_detail_response.status_code == 200
     source_detail = source_detail_response.json()
     categories = {indicator["category"] for indicator in source_detail["risk_indicators"]}
     assert {"sqli", "ssrf", "reflected_xss"}.issubset(categories)
+    assert len(source_detail["taint_flows"]) >= 1
 
     spec_response = client.post(
         f"/api/v1/artifacts/scan/{scan_id}/api-spec",

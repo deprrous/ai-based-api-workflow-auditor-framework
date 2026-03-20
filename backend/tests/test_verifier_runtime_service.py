@@ -6,6 +6,8 @@ from datetime import timedelta, timezone
 from api.app.config import get_settings
 from api.app.database import session_scope
 from api.repositories.replay_artifact_repository import ReplayArtifactRepository
+from api.schemas.callbacks import CallbackKind
+from api.services.callback_service import callback_service
 from api.schemas.verifier_jobs import (
     ClaimVerifierJobRequest,
     CompleteVerifierJobRequest,
@@ -582,3 +584,87 @@ def test_http_replay_executor_detects_cross_actor_authorization_drift(client) ->
 
     outcome = executor.execute(job)
     assert outcome.confirmed is True
+
+
+def test_http_replay_executor_confirms_ssrf_via_out_of_band_callback(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+
+    job.title = "SSRF callback path"
+    job.payload.vulnerability_class = "ssrf"
+    job.payload.replay_plan.assertions = [
+        {
+            "type": "callback_received",
+            "target_request_fingerprint": "fp-delete",
+            "description": "Out-of-band callback should be received.",
+            "callback_label": "ssrf_oob",
+            "wait_seconds": 1,
+        }
+    ]
+    job.payload.replay_plan.mutations = [
+        {
+            "type": "query_set",
+            "target_request_fingerprint": "fp-delete",
+            "query_param": "url",
+            "value": "{{callback_url:ssrf_oob}}",
+        }
+    ]
+
+    def transport(request_spec, *, headers, body, **kwargs):
+        parsed = __import__("urllib.parse").parse.urlsplit(request_spec.path)
+        query = __import__("urllib.parse").parse.parse_qs(parsed.query)
+        callback_url = query.get("url", [None])[0]
+        if callback_url:
+            token = callback_url.rstrip("/").split("/")[-1]
+            callback_service.record_event(
+                token=token,
+                method="GET",
+                path=f"/api/v1/callbacks/public/{token}",
+                query_string="kind=ssrf",
+                headers={"User-Agent": "ssrf-probe"},
+                body_excerpt=None,
+                source_ip="127.0.0.1",
+                user_agent="ssrf-probe",
+            )
+        return ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=200,
+            body_excerpt="ok",
+            response_headers={},
+            duration_ms=20,
+        )
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal",
+        actor_headers={"partner-member": {"Authorization": "Bearer token"}},
+        transport=transport,
+    )
+
+    outcome = executor.execute(job)
+    assert outcome.confirmed is True
+
+
+def test_public_callback_endpoint_records_browser_like_xss_confirmation(client) -> None:
+    expectation = callback_service.create_expectation(
+        scan_id="bootstrap-scan",
+        verifier_job_id=None,
+        kind=CallbackKind.XSS,
+        label="stored_xss_browser",
+    )
+    assert expectation is not None
+
+    response = client.get(f"/api/v1/callbacks/public/{expectation.token}?kind=xss", headers={"User-Agent": "browser-probe"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "received"
+
+    detail_response = client.get(
+        f"/api/v1/callbacks/token/{expectation.token}",
+        headers={"X-Auditor-Ingest-Token": "test-ingest-token"},
+    )
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["status"] == "received"
+    assert len(detail["events"]) == 1

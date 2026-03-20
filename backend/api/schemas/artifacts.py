@@ -28,6 +28,19 @@ class ArtifactRiskIndicatorSummary(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class ArtifactTaintFlowSummary(BaseModel):
+    category: ArtifactRiskCategory
+    source_summary: str
+    source_location: str
+    sink_summary: str
+    sink_location: str
+    route_method: str | None = Field(default=None, max_length=16)
+    route_path: str | None = Field(default=None, max_length=400)
+    confidence: int = Field(ge=0, le=100)
+    rationale: str
+    tags: list[str] = Field(default_factory=list)
+
+
 class ArtifactRouteSummary(BaseModel):
     method: str = Field(min_length=2, max_length=16)
     path: str = Field(min_length=1, max_length=400)
@@ -46,6 +59,7 @@ class ArtifactSummary(BaseModel):
     route_count: int
     auth_scheme_count: int
     risk_indicator_count: int
+    taint_flow_count: int
     created_at: datetime
     updated_at: datetime
 
@@ -54,6 +68,7 @@ class ArtifactDetail(ArtifactSummary):
     content_excerpt: str
     parsed_summary: dict[str, object]
     risk_indicators: list[ArtifactRiskIndicatorSummary]
+    taint_flows: list[ArtifactTaintFlowSummary]
 
 
 class SourceArtifactIngestRequest(BaseModel):
@@ -77,3 +92,4 @@ class ArtifactMatchReference(BaseModel):
     route: ArtifactRouteSummary | None = None
     rationale: str
     risk_indicators: list[ArtifactRiskIndicatorSummary] = Field(default_factory=list)
+    taint_flows: list[ArtifactTaintFlowSummary] = Field(default_factory=list)

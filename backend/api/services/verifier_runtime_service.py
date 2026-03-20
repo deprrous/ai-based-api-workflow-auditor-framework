@@ -8,15 +8,18 @@ import json
 import time
 from typing import Callable, Protocol
 from urllib import parse
+import re
 
 import httpx
 
 from api.app.config import Settings
 from api.schemas.events import EventSeverity, EventSource, RecordScanEventRequest
+from api.schemas.callbacks import CallbackExpectationDetail, CallbackExpectationStatus, CallbackKind
 from api.schemas.findings import FindingEvidence, FindingSeverity
 from api.schemas.replay_artifacts import ReplayArtifactMaterial
 from api.schemas.verifier_jobs import (
     ReplayAssertionSpec,
+    ReplayAssertionType,
     ReplayMutationSpec,
     ReplayMutationType,
     ReplayPlan,
@@ -25,6 +28,7 @@ from api.schemas.verifier_jobs import (
 )
 from api.schemas.verifier_jobs import ClaimVerifierJobRequest, CompleteVerifierJobRequest, FailVerifierJobRequest, VerifierJobDetail
 from api.services.event_service import event_service
+from api.services.callback_service import callback_service
 from api.services.replay_artifact_service import replay_artifact_service
 from api.services.verifier_job_service import verifier_job_service
 from tools.verifier.response_analysis import evaluate_assertions
@@ -124,6 +128,11 @@ def _response_excerpt(text: str, *, limit: int = 240) -> str:
     return compact[:limit]
 
 
+def _evidence_label(method: str, path: str, *, limit: int = 96) -> str:
+    compact_path = path if len(path) <= limit else f"{path[: limit - 3]}..."
+    return f"Replay {method.upper()} {compact_path}"
+
+
 def _request_url(base_url: str | None, request_spec: ReplayRequestSpec) -> str:
     if request_spec.path.startswith("http://") or request_spec.path.startswith("https://"):
         return request_spec.path
@@ -220,6 +229,23 @@ def _set_query_param(path: str, query_param: str, value: object) -> str:
     )
 
 
+CALLBACK_URL_PLACEHOLDER = re.compile(r"^\{\{callback_url:([a-zA-Z0-9._-]+)\}\}$")
+XSS_CALLBACK_PLACEHOLDER = re.compile(r"^\{\{xss_callback:([a-zA-Z0-9._-]+)\}\}$")
+
+
+def _resolve_dynamic_value(value: object, callback_urls: dict[str, str]) -> object:
+    if not isinstance(value, str):
+        return value
+    if match := CALLBACK_URL_PLACEHOLDER.match(value):
+        return callback_urls.get(match.group(1), value)
+    if match := XSS_CALLBACK_PLACEHOLDER.match(value):
+        callback_url = callback_urls.get(match.group(1), "")
+        if not callback_url:
+            return value
+        return f'<img src="{callback_url}" style="display:none" />auditor-{match.group(1)}'
+    return value
+
+
 def _apply_mutations(
     request_spec: ReplayRequestSpec,
     *,
@@ -228,6 +254,7 @@ def _apply_mutations(
     headers: dict[str, str],
     body: bytes | None,
     mutations: list[ReplayMutationSpec],
+    callback_urls: dict[str, str],
 ) -> tuple[str, dict[str, str], bytes | None, str | None]:
     updated_path = path
     updated_headers = dict(headers)
@@ -241,9 +268,10 @@ def _apply_mutations(
         if mutation.type == ReplayMutationType.PATH_REPLACE and mutation.from_value and mutation.to_value:
             updated_path = updated_path.replace(mutation.from_value, mutation.to_value)
         elif mutation.type == ReplayMutationType.QUERY_SET and mutation.query_param:
-            updated_path = _set_query_param(updated_path, mutation.query_param, mutation.value)
+            updated_path = _set_query_param(updated_path, mutation.query_param, _resolve_dynamic_value(mutation.value, callback_urls))
         elif mutation.type == ReplayMutationType.HEADER_SET and mutation.header_name:
-            updated_headers[mutation.header_name] = str(mutation.value if mutation.value is not None else mutation.to_value or "")
+            resolved_value = _resolve_dynamic_value(mutation.value if mutation.value is not None else mutation.to_value or "", callback_urls)
+            updated_headers[mutation.header_name] = str(resolved_value)
         elif mutation.type == ReplayMutationType.ACTOR_SWITCH and mutation.actor:
             request_actor = mutation.actor
         elif mutation.type == ReplayMutationType.BODY_JSON_SET and mutation.body_field:
@@ -253,7 +281,7 @@ def _apply_mutations(
                     parsed = {}
             except Exception:
                 parsed = {}
-            _set_json_path(parsed, mutation.body_field, mutation.value)
+            _set_json_path(parsed, mutation.body_field, _resolve_dynamic_value(mutation.value, callback_urls))
             updated_body = json.dumps(parsed, ensure_ascii=True).encode("utf-8")
             updated_headers.setdefault("Content-Type", "application/json")
 
@@ -291,6 +319,8 @@ class HttpReplayVerifierExecutor:
                 replay_result=None,
                 note="No replay plan is attached to the verifier job.",
             )
+        callback_context = self._prepare_callback_context(job, replay_plan)
+        callback_urls = {label: expectation.callback_url for label, expectation in callback_context.items()}
         default_actor = replay_plan.actor or (replay_plan.requests[-1].actor if replay_plan.requests else None)
         dynamic_headers: dict[str, str] = {}
         response_results: list[ReplayHttpResult] = []
@@ -320,6 +350,7 @@ class HttpReplayVerifierExecutor:
                 plan_actor=default_actor,
                 mutations=replay_plan.mutations,
                 dynamic_headers=dynamic_headers,
+                callback_urls=callback_urls,
             )
             if response_result.status_code in replay_plan.refresh_on_status_codes and replay_plan.refresh_requests and replay_plan.retry_after_refresh:
                 refresh_succeeded = self._execute_refresh_requests(
@@ -334,6 +365,7 @@ class HttpReplayVerifierExecutor:
                         plan_actor=default_actor,
                         mutations=replay_plan.mutations,
                         dynamic_headers=dynamic_headers,
+                        callback_urls=callback_urls,
                     )
 
             response_results.append(response_result)
@@ -345,6 +377,7 @@ class HttpReplayVerifierExecutor:
             replay_plan.assertions,
             response_results,
             baseline_results=baseline_results,
+            callback_received=self._collect_callback_assertion_results(replay_plan, callback_context=callback_context),
         )
         if replay_plan.assertions and not assertions_passed:
             return VerifierExecutionOutcome(
@@ -364,7 +397,7 @@ class HttpReplayVerifierExecutor:
 
         evidence = [
             FindingEvidence(
-                label=f"Replay {result.request.method.upper()} {result.request.path}",
+                label=_evidence_label(result.request.method, result.request.path),
                 detail=(
                     f"{result.url} returned HTTP {result.status_code} in {result.duration_ms} ms. "
                     f"Response excerpt: {result.body_excerpt or '<empty>'}"
@@ -434,6 +467,62 @@ class HttpReplayVerifierExecutor:
         ]
         return replay_plan
 
+    def _prepare_callback_context(self, job: VerifierJobDetail, replay_plan: ReplayPlan) -> dict[str, CallbackExpectationDetail]:
+        labels: set[str] = set()
+        for assertion in replay_plan.assertions:
+            if assertion.callback_label:
+                labels.add(assertion.callback_label)
+
+        for mutation in replay_plan.mutations:
+            values_to_scan = [mutation.value, mutation.to_value]
+            for raw_value in values_to_scan:
+                if not isinstance(raw_value, str):
+                    continue
+                for regex in (CALLBACK_URL_PLACEHOLDER, XSS_CALLBACK_PLACEHOLDER):
+                    match = regex.match(raw_value)
+                    if match:
+                        labels.add(match.group(1))
+
+        callback_context: dict[str, CallbackExpectationDetail] = {}
+        for label in labels:
+            kind = CallbackKind.SSRF if job.payload.vulnerability_class == "ssrf" else CallbackKind.XSS
+            expectation = callback_service.create_expectation(
+                scan_id=job.scan_id,
+                verifier_job_id=job.id,
+                kind=kind,
+                label=label,
+            )
+            if expectation is not None:
+                callback_context[label] = expectation
+        return callback_context
+
+    def _collect_callback_assertion_results(
+        self,
+        replay_plan: ReplayPlan,
+        *,
+        callback_context: dict[str, CallbackExpectationDetail],
+    ) -> dict[str, bool]:
+        results: dict[str, bool] = {}
+        for assertion in replay_plan.assertions:
+            if assertion.type != ReplayAssertionType.CALLBACK_RECEIVED or not assertion.callback_label:
+                continue
+            expectation = callback_context.get(assertion.callback_label)
+            if expectation is None:
+                results[assertion.callback_label] = False
+                continue
+            deadline = time.monotonic() + assertion.wait_seconds
+            received = False
+            while True:
+                current = callback_service.get_expectation_by_token(expectation.token)
+                if current is not None and current.status == CallbackExpectationStatus.RECEIVED:
+                    received = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.1)
+            results[assertion.callback_label] = received
+        return results
+
     def _execute_request(
         self,
         request_spec: ReplayRequestSpec,
@@ -442,6 +531,7 @@ class HttpReplayVerifierExecutor:
         plan_actor: str | None,
         mutations: list[ReplayMutationSpec],
         dynamic_headers: dict[str, str],
+        callback_urls: dict[str, str],
     ) -> tuple[ReplayHttpResult | None, ReplayHttpResult]:
         base_headers = dict(artifact.request_headers) if artifact is not None else {}
         base_body = _decode_body(artifact.request_body_base64) if artifact is not None else None
@@ -471,6 +561,7 @@ class HttpReplayVerifierExecutor:
             headers=base_headers,
             body=base_body,
             mutations=mutations,
+            callback_urls=callback_urls,
         )
         actor_headers = self.actor_headers.get(actor_key or "", {})
         merged_headers = _merge_headers(interim_headers, actor_headers)

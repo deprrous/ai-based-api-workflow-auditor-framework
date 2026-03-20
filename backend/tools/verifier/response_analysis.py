@@ -18,6 +18,7 @@ def evaluate_assertions(
     results: list[ReplayHttpResult],
     *,
     baseline_results: dict[str, ReplayHttpResult] | None = None,
+    callback_received: dict[str, bool] | None = None,
 ) -> tuple[bool, list[str]]:
     if not assertions:
         return True, []
@@ -86,6 +87,14 @@ def evaluate_assertions(
                 explanation_lines.append(f"Assertion satisfied: {assertion.description}")
                 continue
             explanation_lines.append("Assertion failed: mutated response body did not differ from baseline body.")
+            return False, explanation_lines
+
+        if assertion.type == ReplayAssertionType.CALLBACK_RECEIVED:
+            callback_received = callback_received or {}
+            if assertion.callback_label and callback_received.get(assertion.callback_label):
+                explanation_lines.append(f"Assertion satisfied: {assertion.description}")
+                continue
+            explanation_lines.append(f"Assertion failed: callback '{assertion.callback_label}' was not received.")
             return False, explanation_lines
 
     return True, explanation_lines

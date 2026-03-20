@@ -12,6 +12,7 @@ from api.schemas.artifacts import (
     ArtifactMatchReference,
     ArtifactRiskCategory,
     ArtifactRiskIndicatorSummary,
+    ArtifactTaintFlowSummary,
     ArtifactRouteSummary,
     ArtifactSummary,
 )
@@ -36,6 +37,12 @@ SOURCE_XSS_PATTERNS = (
 URL_LIKE_FIELDS = {"url", "uri", "target", "callback", "callback_url", "redirect", "redirect_url", "webhook", "endpoint", "image_url"}
 QUERY_LIKE_FIELDS = {"q", "query", "search", "filter", "sort", "order", "where", "id", "ids"}
 HTML_LIKE_FIELDS = {"html", "content", "body", "message", "comment", "description", "bio", "markdown", "template"}
+INPUT_SOURCE_PATTERNS = (
+    re.compile(r"request\.(?:args|get_json|json|form|query_params|path_params|headers|data)", re.IGNORECASE),
+    re.compile(r"req\.(?:query|body|params|headers)", re.IGNORECASE),
+    re.compile(r"(?:query|payload|params|body|data)\s*=", re.IGNORECASE),
+)
+FUNCTION_DEFINITION = re.compile(r"def\s+\w+\(([^)]*)\)")
 
 
 def _checksum(value: str) -> str:
@@ -147,6 +154,67 @@ def _parse_source_risk_indicators(content: str, routes: list[dict[str, str]]) ->
             )
 
     return indicators
+
+
+def _source_category_from_line(line: str) -> ArtifactRiskCategory | None:
+    lowered = line.lower()
+    if any(pattern.search(line) for pattern in SOURCE_SQLI_PATTERNS):
+        return ArtifactRiskCategory.SQLI
+    if any(pattern.search(line) for pattern in SOURCE_SSRF_PATTERNS):
+        return ArtifactRiskCategory.SSRF
+    if any(pattern.search(line) for pattern in SOURCE_XSS_PATTERNS):
+        if "dangerouslysetinnerhtml" in lowered or "inn" in lowered or "template" in lowered:
+            return ArtifactRiskCategory.REFLECTED_XSS
+        return ArtifactRiskCategory.STORED_XSS
+    return None
+
+
+def _parse_taint_flows(content: str, routes: list[dict[str, str]]) -> list[dict[str, object]]:
+    route_method = routes[0]["method"] if routes else None
+    route_path = routes[0]["path"] if routes else None
+    sources: list[tuple[int, str]] = []
+    sinks: list[tuple[int, ArtifactRiskCategory, str]] = []
+
+    for line_number, line in _iter_lines(content):
+        if any(pattern.search(line) for pattern in INPUT_SOURCE_PATTERNS):
+            sources.append((line_number, line.strip()))
+        if match := FUNCTION_DEFINITION.search(line):
+            parameters = [item.strip().split("=")[0].strip() for item in match.group(1).split(",") if item.strip()]
+            if parameters:
+                sources.append((line_number, f"route parameters: {', '.join(parameters)}"))
+        sink_category = _source_category_from_line(line)
+        if sink_category is not None:
+            sinks.append((line_number, sink_category, line.strip()))
+
+    taint_flows: list[dict[str, object]] = []
+    for source_line, source_text in sources:
+        for sink_line, sink_category, sink_text in sinks:
+            if sink_line < source_line:
+                continue
+            taint_flows.append(
+                ArtifactTaintFlowSummary(
+                    category=sink_category,
+                    source_summary="Detected request-derived input source",
+                    source_location=f"line {source_line}",
+                    sink_summary=f"Detected {sink_category.value.replace('_', ' ')} sink",
+                    sink_location=f"line {sink_line}",
+                    route_method=route_method,
+                    route_path=route_path,
+                    confidence=90 if sink_line - source_line < 12 else 78,
+                    rationale="A request-derived input source appears in the same route context before a dangerous sink, suggesting taint-style exploitability.",
+                    tags=["taint-flow", sink_category.value],
+                ).model_dump(mode="json")
+            )
+
+    deduped: list[dict[str, object]] = []
+    seen = set()
+    for flow in taint_flows:
+        key = (flow["category"], flow["source_location"], flow["sink_location"], flow.get("route_path"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(flow)
+    return deduped
 
 
 def _extract_properties(schema: object) -> set[str]:
@@ -270,6 +338,19 @@ def _parse_spec_indicators(path: str, method: str, operation: dict[str, object])
 def parse_source_artifact(language: str, content: str) -> dict[str, object]:
     unique_routes = _route_entries(content)
     risk_indicators = _parse_source_risk_indicators(content, unique_routes)
+    taint_flows = _parse_taint_flows(content, unique_routes)
+    for flow in taint_flows:
+        risk_indicators.append(
+            _build_indicator(
+                category=ArtifactRiskCategory(flow["category"]),
+                summary=f"Taint-style source-to-sink correlation for {flow['category'].replace('_', ' ')}.",
+                location=f"{flow['source_location']} -> {flow['sink_location']}",
+                confidence=int(flow["confidence"]),
+                route_method=flow.get("route_method"),
+                route_path=flow.get("route_path"),
+                tags=[*flow.get("tags", []), "taint-correlation"],
+            )
+        )
 
     return {
         "language": language,
@@ -277,6 +358,8 @@ def parse_source_artifact(language: str, content: str) -> dict[str, object]:
         "routes": unique_routes,
         "risk_indicator_count": len(risk_indicators),
         "risk_indicators": risk_indicators,
+        "taint_flow_count": len(taint_flows),
+        "taint_flows": taint_flows,
     }
 
 
@@ -395,6 +478,7 @@ def summarize_artifact(
     route_count_value = parsed_summary.get("route_count", 0)
     auth_scheme_count_value = parsed_summary.get("auth_scheme_count", 0)
     risk_indicator_count_value = parsed_summary.get("risk_indicator_count", 0)
+    taint_flow_count_value = parsed_summary.get("taint_flow_count", 0)
     return ArtifactSummary(
         id=artifact_id,
         scan_id=scan_id,
@@ -407,6 +491,7 @@ def summarize_artifact(
         route_count=_coerce_count(route_count_value),
         auth_scheme_count=_coerce_count(auth_scheme_count_value),
         risk_indicator_count=_coerce_count(risk_indicator_count_value),
+        taint_flow_count=_coerce_count(taint_flow_count_value),
         created_at=created_at,
         updated_at=updated_at,
     )

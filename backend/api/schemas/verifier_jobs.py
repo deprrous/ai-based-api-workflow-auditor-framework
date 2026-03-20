@@ -44,6 +44,7 @@ class ReplayAssertionType(StrEnum):
     DURATION_MS_GTE = "duration_ms_gte"
     STATUS_DIFFERS_FROM_BASELINE = "status_differs_from_baseline"
     BODY_DIFFERS_FROM_BASELINE = "body_differs_from_baseline"
+    CALLBACK_RECEIVED = "callback_received"
 
 
 class ReplayMutationSpec(BaseModel):
@@ -67,6 +68,8 @@ class ReplayAssertionSpec(BaseModel):
     header_name: str | None = Field(default=None, max_length=120)
     status_codes: list[int] = Field(default_factory=list)
     threshold_ms: int | None = Field(default=None, ge=0)
+    callback_label: str | None = Field(default=None, max_length=120)
+    wait_seconds: int = Field(default=0, ge=0, le=30)
 
 
 class ReplayRefreshRequestSpec(BaseModel):

@@ -125,6 +125,8 @@ The deterministic backend planner now has explicit vulnerability coverage rules 
 - SSRF candidates
 - stored/reflected XSS candidates
 
+The verifier now also supports out-of-band callback confirmation paths and taint-style source/sink correlation for stronger exploit hypotheses.
+
 ```bash
 cd frontend
 npm install

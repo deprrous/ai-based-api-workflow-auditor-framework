@@ -96,6 +96,36 @@ class ReplayArtifactRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class CallbackExpectationRecord(Base):
+    __tablename__ = "callback_expectations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    verifier_job_id: Mapped[str | None] = mapped_column(ForeignKey("verifier_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CallbackEventRecord(Base):
+    __tablename__ = "callback_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    expectation_id: Mapped[str] = mapped_column(ForeignKey("callback_expectations.id", ondelete="CASCADE"), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    path: Mapped[str] = mapped_column(String(400), nullable=False)
+    query_string: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headers_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    body_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_ip: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class ScanArtifactRecord(Base):
     __tablename__ = "scan_artifacts"
 
