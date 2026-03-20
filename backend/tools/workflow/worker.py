@@ -21,9 +21,11 @@ from api.schemas.verifier_jobs import (
     ReplayMutationSpec,
     ReplayMutationType,
     ReplayPlan,
+    ReplayPayloadVariant,
     ReplayRequestSpec,
 )
 from api.schemas.workflows import WorkflowEdge, WorkflowNode, WorkflowNodeStatus, WorkflowNodeType
+from tools.verifier.payload_library import build_payload_variants
 
 
 def _node_status(severity: FindingSeverity) -> WorkflowNodeStatus:
@@ -156,6 +158,7 @@ def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | N
     mutations = build_mutations(candidate, replay_requests)
     assertions = build_assertions(candidate, replay_requests)
     browser_plan = build_browser_plan(candidate, replay_requests)
+    variants = build_payload_variants(candidate.vulnerability_class, replay_requests)
 
     success_status_codes = [200, 202, 204]
     if replay_requests[-1].method.upper() in {"DELETE", "PATCH", "PUT"}:
@@ -170,6 +173,7 @@ def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | N
         mutations=mutations,
         assertions=assertions,
         browser_plan=browser_plan,
+        variants=variants,
     )
 
 

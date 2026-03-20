@@ -80,6 +80,7 @@ def test_workflow_mapper_builds_flagged_path_contract() -> None:
     assert contract.replay_plan is not None
     assert len(contract.replay_plan.requests) == 3
     assert contract.replay_plan.requests[1].artifact_id == "artifact-members"
+    assert len(contract.replay_plan.variants) >= 1
     assert request.event_type == "workflow_mapper.path_flagged"
     assert request.source == "workflow_mapper"
 

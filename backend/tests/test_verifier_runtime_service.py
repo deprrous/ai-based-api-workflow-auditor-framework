@@ -187,6 +187,7 @@ def test_http_replay_executor_confirms_job_with_replay_plan(client) -> None:
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
     job.payload.replay_plan.mutations = []
     job.payload.replay_plan.assertions = []
 
@@ -229,6 +230,7 @@ def test_http_replay_executor_returns_unconfirmed_when_target_denies_access(clie
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
     job.payload.replay_plan.mutations = []
     job.payload.replay_plan.assertions = []
 
@@ -259,6 +261,7 @@ def test_replay_artifact_retention_purges_sensitive_material_and_blocks_replay(c
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
     artifact_id = job.payload.replay_plan.requests[1].artifact_id
     assert artifact_id is not None
 
@@ -305,6 +308,7 @@ def test_http_replay_executor_applies_path_body_and_header_mutations(client) -> 
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
     job.payload.replay_plan.assertions = []
 
     job.payload.replay_plan.mutations = [
@@ -368,6 +372,7 @@ def test_http_replay_executor_refreshes_session_and_retries(client) -> None:
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
     job.payload.replay_plan.mutations = []
     job.payload.replay_plan.assertions = []
 
@@ -433,6 +438,7 @@ def test_http_replay_executor_confirms_sqli_with_error_indicator(client) -> None
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
 
     job.title = "SQL injection candidate path"
     job.payload.vulnerability_class = "sqli"
@@ -472,6 +478,7 @@ def test_http_replay_executor_confirms_ssrf_with_metadata_indicator(client) -> N
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
 
     job.title = "SSRF candidate path"
     job.payload.vulnerability_class = "ssrf"
@@ -510,6 +517,7 @@ def test_http_replay_executor_confirms_reflected_xss_marker(client) -> None:
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
 
     job.title = "Reflected XSS candidate path"
     job.payload.vulnerability_class = "reflected_xss"
@@ -548,6 +556,7 @@ def test_http_replay_executor_detects_cross_actor_authorization_drift(client) ->
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
 
     job.payload.replay_plan.mutations = [
         ReplayMutationSpec(
@@ -593,6 +602,7 @@ def test_http_replay_executor_confirms_ssrf_via_out_of_band_callback(client) -> 
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
 
     job.title = "SSRF callback path"
     job.payload.vulnerability_class = "ssrf"
@@ -677,6 +687,7 @@ def test_http_replay_executor_uses_browser_executor_for_xss_callback(client) -> 
     jobs = verifier_job_service.list_verifier_jobs(scan_id)
     job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
+    job.payload.replay_plan.variants = []
 
     job.title = "Browser XSS path"
     job.payload.vulnerability_class = "reflected_xss"

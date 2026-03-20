@@ -120,6 +120,7 @@ Current replay mutation support includes:
 - role and permission header mutation
 - per-request actor switching
 - token/session refresh retry logic
+- structured payload variants per vulnerability class
 
 Current replay assertion and response analysis support includes:
 

@@ -18,7 +18,9 @@ from api.schemas.callbacks import CallbackExpectationDetail, CallbackExpectation
 from api.schemas.findings import FindingEvidence, FindingSeverity
 from api.schemas.replay_artifacts import ReplayArtifactMaterial
 from api.schemas.verifier_jobs import (
+    BrowserPlan,
     BrowserVisitSpec,
+    ReplayPayloadVariant,
     ReplayAssertionSpec,
     ReplayAssertionType,
     ReplayMutationSpec,
@@ -331,7 +333,37 @@ class HttpReplayVerifierExecutor:
                 replay_result=None,
                 note="No replay plan is attached to the verifier job.",
             )
-        callback_context = self._prepare_callback_context(job, replay_plan)
+        variants = replay_plan.variants or [
+            ReplayPayloadVariant(
+                id="default",
+                label="Default replay",
+                description="Use the base replay plan mutations and assertions.",
+                mutations=list(replay_plan.mutations),
+                assertions=list(replay_plan.assertions),
+                browser_plan=replay_plan.browser_plan,
+            )
+        ]
+
+        variant_failures: list[str] = []
+        for variant in variants:
+            outcome = self._execute_variant(job, replay_plan, variant)
+            if outcome.confirmed:
+                return outcome
+            variant_failures.append(f"{variant.id}: {outcome.note}")
+
+        return VerifierExecutionOutcome(
+            confirmed=False,
+            replay_result=None,
+            note=" | ".join(variant_failures) if variant_failures else "Replay variants did not confirm the path.",
+        )
+
+    def _execute_variant(
+        self,
+        job: VerifierJobDetail,
+        replay_plan: ReplayPlan,
+        variant: ReplayPayloadVariant,
+    ) -> VerifierExecutionOutcome:
+        callback_context = self._prepare_callback_context(job, variant=variant)
         callback_urls = {label: expectation.callback_url for label, expectation in callback_context.items()}
         default_actor = replay_plan.actor or (replay_plan.requests[-1].actor if replay_plan.requests else None)
         dynamic_headers: dict[str, str] = {}
@@ -360,7 +392,7 @@ class HttpReplayVerifierExecutor:
                 request_spec,
                 artifact=artifact,
                 plan_actor=default_actor,
-                mutations=replay_plan.mutations,
+                mutations=variant.mutations,
                 dynamic_headers=dynamic_headers,
                 callback_urls=callback_urls,
             )
@@ -375,7 +407,7 @@ class HttpReplayVerifierExecutor:
                         request_spec,
                         artifact=artifact,
                         plan_actor=default_actor,
-                        mutations=replay_plan.mutations,
+                        mutations=variant.mutations,
                         dynamic_headers=dynamic_headers,
                         callback_urls=callback_urls,
                     )
@@ -384,21 +416,21 @@ class HttpReplayVerifierExecutor:
             if baseline_result is not None:
                 baseline_results[response_result.request.request_fingerprint] = baseline_result
             _apply_set_cookie(dynamic_headers, response_result.response_headers)
-        self._run_browser_plan(replay_plan, callback_context=callback_context, dynamic_headers=dynamic_headers, default_actor=default_actor)
+        self._run_browser_plan(variant.browser_plan, callback_context=callback_context, dynamic_headers=dynamic_headers, default_actor=default_actor)
         final_result = response_results[-1]
         assertions_passed, assertion_explanations = evaluate_assertions(
-            replay_plan.assertions,
+            variant.assertions,
             response_results,
             baseline_results=baseline_results,
-            callback_details=self._collect_callback_assertion_results(replay_plan, callback_context=callback_context),
+            callback_details=self._collect_callback_assertion_results(variant.assertions, callback_context=callback_context),
         )
-        if replay_plan.assertions and not assertions_passed:
+        if variant.assertions and not assertions_passed:
             return VerifierExecutionOutcome(
                 confirmed=False,
                 replay_result=None,
                 note=" ".join(assertion_explanations),
             )
-        if not replay_plan.assertions and final_result.status_code not in replay_plan.success_status_codes:
+        if not variant.assertions and final_result.status_code not in replay_plan.success_status_codes:
             return VerifierExecutionOutcome(
                 confirmed=False,
                 replay_result=None,
@@ -454,12 +486,12 @@ class HttpReplayVerifierExecutor:
             remediation="Review the authorization checks for each replayed step and block the actor from reaching the final high-risk endpoint.",
             workflow_node_ids=list(job.payload.workflow_node_ids),
             evidence=evidence,
-            tags=["http-replay", job.severity.value, *{node.phase for node in job.payload.workflow_nodes}],
+            tags=["http-replay", variant.id, job.severity.value, *{node.phase for node in job.payload.workflow_nodes}],
         )
         return VerifierExecutionOutcome(
             confirmed=True,
             replay_result=replay_result,
-            note="HTTP replay executor confirmed the queued verifier job.",
+            note=f"HTTP replay executor confirmed the queued verifier job with variant {variant.id}.",
         )
 
     def _normalized_replay_plan(self, replay_plan: ReplayPlan | None) -> ReplayPlan | None:
@@ -474,19 +506,27 @@ class HttpReplayVerifierExecutor:
             assertion if isinstance(assertion, ReplayAssertionSpec) else ReplayAssertionSpec.model_validate(assertion)
             for assertion in replay_plan.assertions
         ]
+        replay_plan.variants = [
+            variant if isinstance(variant, ReplayPayloadVariant) else ReplayPayloadVariant.model_validate(variant)
+            for variant in replay_plan.variants
+        ]
         replay_plan.refresh_requests = [
             refresh if isinstance(refresh, ReplayRefreshRequestSpec) else ReplayRefreshRequestSpec.model_validate(refresh)
             for refresh in replay_plan.refresh_requests
         ]
         return replay_plan
 
-    def _prepare_callback_context(self, job: VerifierJobDetail, replay_plan: ReplayPlan) -> dict[str, CallbackExpectationDetail]:
+    def _prepare_callback_context(self, job: VerifierJobDetail, *, variant: ReplayPayloadVariant) -> dict[str, CallbackExpectationDetail]:
         labels: set[str] = set()
-        for assertion in replay_plan.assertions:
+        for assertion in variant.assertions:
             if assertion.callback_label:
                 labels.add(assertion.callback_label)
 
-        for mutation in replay_plan.mutations:
+        if variant.browser_plan is not None:
+            for visit in variant.browser_plan.visits:
+                labels.update(visit.callback_labels)
+
+        for mutation in variant.mutations:
             values_to_scan = [mutation.value, mutation.to_value]
             for raw_value in values_to_scan:
                 if not isinstance(raw_value, str):
@@ -511,12 +551,12 @@ class HttpReplayVerifierExecutor:
 
     def _collect_callback_assertion_results(
         self,
-        replay_plan: ReplayPlan,
+        assertions: list[ReplayAssertionSpec],
         *,
         callback_context: dict[str, CallbackExpectationDetail],
     ) -> dict[str, CallbackExpectationDetail]:
         results: dict[str, CallbackExpectationDetail] = {}
-        for assertion in replay_plan.assertions:
+        for assertion in assertions:
             if assertion.type not in {
                 ReplayAssertionType.CALLBACK_RECEIVED,
                 ReplayAssertionType.CALLBACK_METADATA_SCORE_GTE,
@@ -542,20 +582,20 @@ class HttpReplayVerifierExecutor:
 
     def _run_browser_plan(
         self,
-        replay_plan: ReplayPlan,
+        browser_plan: BrowserPlan | None,
         *,
         callback_context: dict[str, CallbackExpectationDetail],
         dynamic_headers: dict[str, str],
         default_actor: str | None,
     ) -> None:
-        if replay_plan.browser_plan is None or not replay_plan.browser_plan.visits:
+        if browser_plan is None or not browser_plan.visits:
             return
         if self.browser_executor is None:
             return
         if self.base_url is None:
             return
 
-        for visit in replay_plan.browser_plan.visits:
+        for visit in browser_plan.visits:
             actor_key = visit.actor or default_actor
             headers = self.actor_headers.get(actor_key or "", {})
             merged_headers = _merge_headers(headers, dynamic_headers)

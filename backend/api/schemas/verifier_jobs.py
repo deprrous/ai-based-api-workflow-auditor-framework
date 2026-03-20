@@ -87,6 +87,15 @@ class BrowserPlan(BaseModel):
     visits: list[BrowserVisitSpec] = Field(default_factory=list)
 
 
+class ReplayPayloadVariant(BaseModel):
+    id: str = Field(min_length=3, max_length=80)
+    label: str = Field(min_length=3, max_length=160)
+    description: str = Field(min_length=3, max_length=500)
+    mutations: list[ReplayMutationSpec] = Field(default_factory=list)
+    assertions: list[ReplayAssertionSpec] = Field(default_factory=list)
+    browser_plan: BrowserPlan | None = None
+
+
 class ReplayRefreshRequestSpec(BaseModel):
     method: str = Field(min_length=2, max_length=16)
     host: str = Field(min_length=3, max_length=120)
@@ -104,6 +113,7 @@ class ReplayPlan(BaseModel):
     mutations: list[ReplayMutationSpec] = Field(default_factory=list)
     assertions: list[ReplayAssertionSpec] = Field(default_factory=list)
     browser_plan: BrowserPlan | None = None
+    variants: list[ReplayPayloadVariant] = Field(default_factory=list)
     refresh_requests: list[ReplayRefreshRequestSpec] = Field(default_factory=list)
     refresh_on_status_codes: list[int] = Field(default_factory=lambda: [401, 419, 440])
     retry_after_refresh: bool = True

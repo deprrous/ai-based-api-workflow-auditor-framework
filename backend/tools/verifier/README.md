@@ -40,6 +40,12 @@ The verifier runtime also supports a real `http-replay` mode.
 - Playwright-backed execution is supported through the backend runtime configuration
 - this is intended for DOM/XSS-style confirmation where plain HTTP replay is not enough
 
+## Payload libraries
+
+- replay plans can now carry structured payload variants per vulnerability class
+- the verifier tries richer exploit payload families instead of only one hard-coded mutation path
+- this makes SQLi, SSRF, XSS, and authz verification closer to real pentest tradecraft
+
 This is the first real replay executor path in the backend.
 
 ## Why this matters
