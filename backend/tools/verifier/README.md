@@ -26,6 +26,7 @@ The verifier runtime also supports a real `http-replay` mode.
 - it replays request sequences attached to queued verifier jobs
 - it uses actor-specific headers from backend configuration
 - it confirms findings only when the replayed target responses match the job success criteria
+- it supports mutation strategies for path ids, body fields, role/permission headers, actor switching, and refresh-driven retries
 
 This is the first real replay executor path in the backend.
 

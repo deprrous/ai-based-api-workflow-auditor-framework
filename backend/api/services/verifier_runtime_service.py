@@ -4,6 +4,7 @@ import asyncio
 import base64
 from dataclasses import dataclass
 import hashlib
+import json
 from typing import Callable, Protocol
 
 import httpx
@@ -12,7 +13,7 @@ from api.app.config import Settings
 from api.schemas.events import EventSeverity, EventSource, RecordScanEventRequest
 from api.schemas.findings import FindingEvidence, FindingSeverity
 from api.schemas.replay_artifacts import ReplayArtifactMaterial
-from api.schemas.verifier_jobs import ReplayRequestSpec
+from api.schemas.verifier_jobs import ReplayMutationSpec, ReplayMutationType, ReplayRefreshRequestSpec, ReplayRequestSpec
 from api.schemas.verifier_jobs import ClaimVerifierJobRequest, CompleteVerifierJobRequest, FailVerifierJobRequest, VerifierJobDetail
 from api.services.event_service import event_service
 from api.services.replay_artifact_service import replay_artifact_service
@@ -57,6 +58,7 @@ class ReplayHttpResult:
     url: str
     status_code: int
     body_excerpt: str
+    response_headers: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +157,91 @@ def _default_http_transport(
         url=str(response.url),
         status_code=response.status_code,
         body_excerpt=_response_excerpt(response.text),
+        response_headers={str(key): str(value) for key, value in response.headers.items()},
+    )
+
+
+def _normalize_header_keys(headers: dict[str, str]) -> dict[str, str]:
+    return {str(key): str(value) for key, value in headers.items()}
+
+
+def _apply_set_cookie(dynamic_headers: dict[str, str], response_headers: dict[str, str]) -> None:
+    cookie_header = None
+    for key, value in response_headers.items():
+        if key.lower() == "set-cookie":
+            cookie_header = value
+            break
+    if cookie_header is None:
+        return
+
+    cookie_pairs = []
+    for part in cookie_header.split(","):
+        cookie = part.split(";", maxsplit=1)[0].strip()
+        if cookie:
+            cookie_pairs.append(cookie)
+    if cookie_pairs:
+        dynamic_headers["Cookie"] = "; ".join(cookie_pairs)
+
+
+def _set_json_path(document: dict[str, object], dotted_path: str, value: object) -> None:
+    segments = [segment for segment in dotted_path.split(".") if segment]
+    if not segments:
+        return
+    current: dict[str, object] = document
+    for segment in segments[:-1]:
+        next_value = current.get(segment)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[segment] = next_value
+        current = next_value
+    current[segments[-1]] = value
+
+
+def _apply_mutations(
+    request_spec: ReplayRequestSpec,
+    *,
+    plan_actor: str | None,
+    path: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    mutations: list[ReplayMutationSpec],
+) -> tuple[str, dict[str, str], bytes | None, str | None]:
+    updated_path = path
+    updated_headers = dict(headers)
+    updated_body = body
+    request_actor = request_spec.actor or plan_actor
+
+    for mutation in mutations:
+        if mutation.target_request_fingerprint is not None and mutation.target_request_fingerprint != request_spec.request_fingerprint:
+            continue
+
+        if mutation.type == ReplayMutationType.PATH_REPLACE and mutation.from_value and mutation.to_value:
+            updated_path = updated_path.replace(mutation.from_value, mutation.to_value)
+        elif mutation.type == ReplayMutationType.HEADER_SET and mutation.header_name:
+            updated_headers[mutation.header_name] = str(mutation.value if mutation.value is not None else mutation.to_value or "")
+        elif mutation.type == ReplayMutationType.ACTOR_SWITCH and mutation.actor:
+            request_actor = mutation.actor
+        elif mutation.type == ReplayMutationType.BODY_JSON_SET and mutation.body_field:
+            try:
+                parsed = json.loads(updated_body.decode("utf-8")) if updated_body else {}
+                if not isinstance(parsed, dict):
+                    parsed = {}
+            except Exception:
+                parsed = {}
+            _set_json_path(parsed, mutation.body_field, mutation.value)
+            updated_body = json.dumps(parsed, ensure_ascii=True).encode("utf-8")
+            updated_headers.setdefault("Content-Type", "application/json")
+
+    return updated_path, updated_headers, updated_body, request_actor
+
+
+def _build_refresh_request_spec(refresh_request: ReplayRefreshRequestSpec) -> ReplayRequestSpec:
+    return ReplayRequestSpec(
+        request_fingerprint=f"refresh:{refresh_request.method.upper()}:{refresh_request.path}",
+        method=refresh_request.method,
+        host=refresh_request.host,
+        path=refresh_request.path,
+        actor=refresh_request.actor,
     )
 
 
@@ -179,9 +266,8 @@ class HttpReplayVerifierExecutor:
                 replay_result=None,
                 note="No replay plan is attached to the verifier job.",
             )
-
-        actor_key = replay_plan.actor or (replay_plan.requests[-1].actor if replay_plan.requests else None)
-        actor_headers = self.actor_headers.get(actor_key or "", {})
+        default_actor = replay_plan.actor or (replay_plan.requests[-1].actor if replay_plan.requests else None)
+        dynamic_headers: dict[str, str] = {}
         response_results: list[ReplayHttpResult] = []
         for request_spec in replay_plan.requests:
             artifact = self._artifact_for_request(request_spec)
@@ -202,7 +288,30 @@ class HttpReplayVerifierExecutor:
                     ),
                 )
 
-            response_results.append(self._execute_request(request_spec, actor_headers, artifact))
+            response_result = self._execute_request(
+                request_spec,
+                artifact=artifact,
+                plan_actor=default_actor,
+                mutations=replay_plan.mutations,
+                dynamic_headers=dynamic_headers,
+            )
+            if response_result.status_code in replay_plan.refresh_on_status_codes and replay_plan.refresh_requests and replay_plan.retry_after_refresh:
+                refresh_succeeded = self._execute_refresh_requests(
+                    replay_plan.refresh_requests,
+                    plan_actor=default_actor,
+                    dynamic_headers=dynamic_headers,
+                )
+                if refresh_succeeded:
+                    response_result = self._execute_request(
+                        request_spec,
+                        artifact=artifact,
+                        plan_actor=default_actor,
+                        mutations=replay_plan.mutations,
+                        dynamic_headers=dynamic_headers,
+                    )
+
+            response_results.append(response_result)
+            _apply_set_cookie(dynamic_headers, response_result.response_headers)
         final_result = response_results[-1]
         if final_result.status_code not in replay_plan.success_status_codes:
             return VerifierExecutionOutcome(
@@ -231,7 +340,7 @@ class HttpReplayVerifierExecutor:
             severity=job.severity,
             confidence=95 if job.severity == FindingSeverity.CRITICAL else 87,
             endpoint=f"{final_result.request.method.upper()} {final_result.request.path}",
-            actor=actor_key,
+            actor=default_actor,
             request_fingerprint=final_result.request.request_fingerprint,
             request_summary=(
                 f"Replayed {len(response_results)} requests for path {job.source_path_id}; "
@@ -260,20 +369,65 @@ class HttpReplayVerifierExecutor:
     def _execute_request(
         self,
         request_spec: ReplayRequestSpec,
-        actor_headers: dict[str, str],
+        *,
         artifact: ReplayArtifactMaterial | None,
+        plan_actor: str | None,
+        mutations: list[ReplayMutationSpec],
+        dynamic_headers: dict[str, str],
     ) -> ReplayHttpResult:
         base_headers = dict(artifact.request_headers) if artifact is not None else {}
-        merged_headers = _merge_headers(base_headers, actor_headers)
-        body = _decode_body(artifact.request_body_base64) if artifact is not None else None
-        return self.transport(
+        base_body = _decode_body(artifact.request_body_base64) if artifact is not None else None
+        base_path = artifact.path if artifact is not None else request_spec.path
+        request_path, interim_headers, body, actor_key = _apply_mutations(
             request_spec,
+            plan_actor=plan_actor,
+            path=base_path,
+            headers=base_headers,
+            body=base_body,
+            mutations=mutations,
+        )
+        actor_headers = self.actor_headers.get(actor_key or "", {})
+        merged_headers = _merge_headers(interim_headers, actor_headers)
+        merged_headers = _merge_headers(merged_headers, dynamic_headers)
+        mutated_request = request_spec.model_copy(update={"path": request_path, "actor": actor_key})
+        return self.transport(
+            mutated_request,
             base_url=self.base_url,
             timeout_seconds=self.timeout_seconds,
             verify_tls=self.verify_tls,
             headers=merged_headers,
             body=body,
         )
+
+    def _execute_refresh_requests(
+        self,
+        refresh_requests: list[ReplayRefreshRequestSpec],
+        *,
+        plan_actor: str | None,
+        dynamic_headers: dict[str, str],
+    ) -> bool:
+        for refresh_request in refresh_requests:
+            request_spec = _build_refresh_request_spec(refresh_request)
+            actor_key = refresh_request.actor or plan_actor
+            actor_headers = self.actor_headers.get(actor_key or "", {})
+            merged_headers = _merge_headers(_normalize_header_keys(refresh_request.headers), actor_headers)
+            merged_headers = _merge_headers(merged_headers, dynamic_headers)
+            body = _decode_body(refresh_request.body_base64)
+            if refresh_request.content_type:
+                merged_headers.setdefault("Content-Type", refresh_request.content_type)
+            result = self.transport(
+                request_spec,
+                base_url=self.base_url,
+                timeout_seconds=self.timeout_seconds,
+                verify_tls=self.verify_tls,
+                headers=merged_headers,
+                body=body,
+            )
+            _apply_set_cookie(dynamic_headers, result.response_headers)
+            if result.status_code >= 400:
+                return False
+
+        return True
 
 
 @dataclass(slots=True)

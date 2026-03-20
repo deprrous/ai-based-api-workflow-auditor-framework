@@ -6,7 +6,12 @@ from datetime import timedelta, timezone
 from api.app.config import get_settings
 from api.app.database import session_scope
 from api.repositories.replay_artifact_repository import ReplayArtifactRepository
-from api.schemas.verifier_jobs import ClaimVerifierJobRequest, CompleteVerifierJobRequest
+from api.schemas.verifier_jobs import (
+    ClaimVerifierJobRequest,
+    CompleteVerifierJobRequest,
+    ReplayMutationSpec,
+    ReplayRefreshRequestSpec,
+)
 from api.services.replay_artifact_service import replay_artifact_service
 from api.services.verifier_job_service import verifier_job_service
 from api.services.verifier_runtime_service import (
@@ -193,6 +198,7 @@ def test_http_replay_executor_confirms_job_with_replay_plan(client) -> None:
             url=f"{base_url}{request_spec.path}",
             status_code=status_code,
             body_excerpt="ok",
+            response_headers={},
         )
 
     executor = HttpReplayVerifierExecutor(
@@ -223,6 +229,7 @@ def test_http_replay_executor_returns_unconfirmed_when_target_denies_access(clie
             url=f"https://qa.example.internal{request_spec.path}",
             status_code=403 if request_spec == job.payload.replay_plan.requests[-1] else 200,
             body_excerpt="forbidden",
+            response_headers={},
         )
 
     executor = HttpReplayVerifierExecutor(
@@ -273,9 +280,131 @@ def test_replay_artifact_retention_purges_sensitive_material_and_blocks_replay(c
             url=f"https://qa.example.internal{request_spec.path}",
             status_code=200,
             body_excerpt="ok",
+            response_headers={},
         ),
     )
     outcome = executor.execute(job)
     assert outcome.confirmed is False
     assert outcome.replay_result is None
     assert "expired under retention policy" in outcome.note
+
+
+def test_http_replay_executor_applies_path_body_and_header_mutations(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+
+    job.payload.replay_plan.mutations = [
+        ReplayMutationSpec(
+            type="path_replace",
+            target_request_fingerprint="fp-delete",
+            from_value="123",
+            to_value="999999",
+        ),
+        ReplayMutationSpec(
+            type="body_json_set",
+            target_request_fingerprint="fp-members",
+            body_field="role",
+            value="admin",
+        ),
+        ReplayMutationSpec(
+            type="header_set",
+            target_request_fingerprint="fp-delete",
+            header_name="X-Role",
+            value="admin",
+        ),
+        ReplayMutationSpec(
+            type="actor_switch",
+            target_request_fingerprint="fp-delete",
+            actor="admin-member",
+        ),
+    ]
+
+    captured = []
+
+    def transport(request_spec, *, base_url, timeout_seconds, verify_tls, headers, body):
+        captured.append((request_spec.path, dict(headers), body))
+        return ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=200,
+            body_excerpt="ok",
+            response_headers={},
+        )
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal",
+        actor_headers={
+            "partner-member": {"Authorization": "Bearer partner-token"},
+            "admin-member": {"Authorization": "Bearer admin-token"},
+        },
+        transport=transport,
+    )
+
+    outcome = executor.execute(job)
+    assert outcome.confirmed is True
+    assert any(path.endswith("/999999") for path, _, _ in captured)
+    assert any(headers.get("X-Role") == "admin" for _, headers, _ in captured)
+    assert any(headers.get("Authorization") == "Bearer admin-token" for path, headers, _ in captured if path.endswith("/999999"))
+    assert any(body and b'"role": "admin"' in body for _, _, body in captured)
+
+
+def test_http_replay_executor_refreshes_session_and_retries(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+
+    job.payload.replay_plan.refresh_requests = [
+        ReplayRefreshRequestSpec(
+            method="POST",
+            host="qa.example.internal",
+            path="/auth/refresh",
+            actor="partner-member",
+            headers={"X-Refresh": "true"},
+        )
+    ]
+
+    seen = {"delete_attempts": 0, "refresh_attempts": 0}
+
+    def transport(request_spec, *, base_url, timeout_seconds, verify_tls, headers, body):
+        if request_spec.path == "/auth/refresh":
+            seen["refresh_attempts"] += 1
+            return ReplayHttpResult(
+                request=request_spec,
+                url=f"https://qa.example.internal{request_spec.path}",
+                status_code=200,
+                body_excerpt="refreshed",
+                response_headers={"Set-Cookie": "session=newsession; Path=/; HttpOnly"},
+            )
+
+        if request_spec.path == "/v1/projects/123":
+            seen["delete_attempts"] += 1
+            status_code = 401 if seen["delete_attempts"] == 1 else 200
+            return ReplayHttpResult(
+                request=request_spec,
+                url=f"https://qa.example.internal{request_spec.path}",
+                status_code=status_code,
+                body_excerpt="ok" if status_code == 200 else "unauthorized",
+                response_headers={},
+            )
+
+        return ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=200,
+            body_excerpt="ok",
+            response_headers={},
+        )
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal",
+        actor_headers={"partner-member": {"Authorization": "Bearer partner-token"}},
+        transport=transport,
+    )
+
+    outcome = executor.execute(job)
+    assert outcome.confirmed is True
+    assert seen["delete_attempts"] == 2
+    assert seen["refresh_attempts"] == 1

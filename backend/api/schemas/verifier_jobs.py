@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -27,10 +28,42 @@ class ReplayRequestSpec(BaseModel):
     actor: str | None = Field(default=None, max_length=120)
 
 
+class ReplayMutationType(StrEnum):
+    PATH_REPLACE = "path_replace"
+    BODY_JSON_SET = "body_json_set"
+    HEADER_SET = "header_set"
+    ACTOR_SWITCH = "actor_switch"
+
+
+class ReplayMutationSpec(BaseModel):
+    type: ReplayMutationType
+    target_request_fingerprint: str | None = Field(default=None, max_length=120)
+    from_value: str | None = Field(default=None, max_length=200)
+    to_value: str | None = Field(default=None, max_length=200)
+    body_field: str | None = Field(default=None, max_length=120)
+    header_name: str | None = Field(default=None, max_length=120)
+    actor: str | None = Field(default=None, max_length=120)
+    value: Any | None = None
+
+
+class ReplayRefreshRequestSpec(BaseModel):
+    method: str = Field(min_length=2, max_length=16)
+    host: str = Field(min_length=3, max_length=120)
+    path: str = Field(min_length=1, max_length=400)
+    actor: str | None = Field(default=None, max_length=120)
+    headers: dict[str, str] = Field(default_factory=dict)
+    body_base64: str | None = None
+    content_type: str | None = Field(default=None, max_length=160)
+
+
 class ReplayPlan(BaseModel):
     actor: str | None = Field(default=None, max_length=120)
     requests: list[ReplayRequestSpec] = Field(default_factory=list)
     success_status_codes: list[int] = Field(default_factory=lambda: [200])
+    mutations: list[ReplayMutationSpec] = Field(default_factory=list)
+    refresh_requests: list[ReplayRefreshRequestSpec] = Field(default_factory=list)
+    refresh_on_status_codes: list[int] = Field(default_factory=lambda: [401, 419, 440])
+    retry_after_refresh: bool = True
 
 
 class VerifierJobPayload(BaseModel):

@@ -106,6 +106,14 @@ For a real backend replay executor, configure:
 
 The `http-replay` executor uses replay plans attached to queued verifier jobs and performs real HTTP requests against the configured target.
 
+Current replay mutation support includes:
+
+- path and object-id mutation
+- JSON body field mutation
+- role and permission header mutation
+- per-request actor switching
+- token/session refresh retry logic
+
 Raw replayable request artifacts are stored separately from scan event payloads so workers can reproduce captured POST, PATCH, cookie, and header state more accurately.
 
 Retention policy is now built in:

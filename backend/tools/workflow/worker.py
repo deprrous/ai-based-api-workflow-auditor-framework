@@ -12,7 +12,7 @@ from api.schemas.events import EventSeverity, EventSource, IngestScanEventReques
 from api.schemas.findings import FindingSeverity
 from api.schemas.planner import VerifierStrategy, VulnerabilityClass
 from api.schemas.producer_contracts import WorkflowMapperPathFlaggedContract
-from api.schemas.verifier_jobs import ReplayPlan, ReplayRequestSpec
+from api.schemas.verifier_jobs import ReplayMutationSpec, ReplayMutationType, ReplayPlan, ReplayRequestSpec
 from api.schemas.workflows import WorkflowEdge, WorkflowNode, WorkflowNodeStatus, WorkflowNodeType
 
 
@@ -143,6 +143,8 @@ def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | N
     if not replay_requests:
         return None
 
+    mutations = build_mutations(candidate, replay_requests)
+
     success_status_codes = [200, 202, 204]
     if replay_requests[-1].method.upper() in {"DELETE", "PATCH", "PUT"}:
         success_status_codes = [200, 202, 204]
@@ -153,7 +155,81 @@ def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | N
         actor=candidate.actor or replay_requests[-1].actor,
         requests=replay_requests,
         success_status_codes=success_status_codes,
+        mutations=mutations,
     )
+
+
+def _last_numeric_segment(path: str | None) -> str | None:
+    if not path:
+        return None
+    segments = [segment for segment in path.split("/") if segment]
+    for segment in reversed(segments):
+        if segment.isdigit():
+            return segment
+    return None
+
+
+def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: list[ReplayRequestSpec]) -> list[ReplayMutationSpec]:
+    mutations: list[ReplayMutationSpec] = []
+    final_request = replay_requests[-1]
+
+    if candidate.vulnerability_class in {"bola_idor", "tenant_isolation"}:
+        current_id = _last_numeric_segment(final_request.path)
+        if current_id is not None:
+            mutations.append(
+                ReplayMutationSpec(
+                    type=ReplayMutationType.PATH_REPLACE,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    from_value=current_id,
+                    to_value="999999",
+                )
+            )
+
+    if candidate.vulnerability_class == "mass_assignment":
+        mutations.extend(
+            [
+                ReplayMutationSpec(
+                    type=ReplayMutationType.BODY_JSON_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    body_field="role",
+                    value="admin",
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.BODY_JSON_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    body_field="permissions",
+                    value=["admin"],
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.HEADER_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    header_name="X-Role",
+                    value="admin",
+                ),
+            ]
+        )
+
+    if candidate.vulnerability_class == "bfla":
+        mutations.append(
+            ReplayMutationSpec(
+                type=ReplayMutationType.HEADER_SET,
+                target_request_fingerprint=final_request.request_fingerprint,
+                header_name="X-Permission-Override",
+                value="admin",
+            )
+        )
+
+    if candidate.vulnerability_class == "unsafe_destructive_action":
+        mutations.append(
+            ReplayMutationSpec(
+                type=ReplayMutationType.HEADER_SET,
+                target_request_fingerprint=final_request.request_fingerprint,
+                header_name="X-Confirm-Destructive-Action",
+                value="true",
+            )
+        )
+
+    return mutations
 
 
 def build_workflow_mapper_contract(candidate: WorkflowPathFindingCandidate) -> WorkflowMapperPathFlaggedContract:
