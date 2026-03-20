@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.app.config import get_settings
 from api.app.database import init_database
-from api.routers import contracts, findings, health, planner, replay_artifacts, reports, scans, service_accounts, verifier_jobs, verifier_runs, workflows
+from api.routers import ai, artifacts, contracts, findings, health, planner, replay_artifacts, reports, scans, service_accounts, verifier_jobs, verifier_runs, workflows
 from api.services.replay_artifact_service import build_retention_service
 from api.services.scan_service import scan_service
 from api.services.verifier_runtime_service import build_runtime_service
@@ -88,7 +88,9 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(health.router, prefix=settings.api_prefix)
+    app.include_router(ai.router, prefix=settings.api_prefix)
     app.include_router(scans.router, prefix=settings.api_prefix)
+    app.include_router(artifacts.router, prefix=settings.api_prefix)
     app.include_router(contracts.router, prefix=settings.api_prefix)
     app.include_router(findings.router, prefix=settings.api_prefix)
     app.include_router(planner.router, prefix=settings.api_prefix)

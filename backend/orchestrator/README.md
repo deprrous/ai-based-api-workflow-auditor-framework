@@ -23,3 +23,5 @@ The orchestrator should output structured hypotheses and actions, not hide every
 - it emits `workflow_mapper.path_flagged` contracts through the backend service layer
 
 This is the first step toward an automated scan pipeline where target observations feed planner output, then verifier jobs, then confirmed findings.
+
+The next orchestration layer now also includes a provider-neutral AI catalog under `orchestrator/providers/` so future reasoning can target multiple hosted or local model backends without coupling business logic to one vendor.

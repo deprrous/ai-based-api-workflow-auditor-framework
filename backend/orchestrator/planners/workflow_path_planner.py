@@ -36,6 +36,24 @@ PRIVILEGE_TRANSITION_KEYWORDS = (
     "permission",
     "permissions",
 )
+TENANT_BOUNDARY_KEYWORDS = (
+    "tenant",
+    "project",
+    "organization",
+    "invoice",
+    "account",
+)
+MASS_ASSIGNMENT_KEYWORDS = (
+    "role",
+    "permission",
+    "permissions",
+    "profile",
+    "settings",
+    "user",
+    "users",
+    "member",
+    "members",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +82,8 @@ def _severity_for_observation(observation: ProxyObservation) -> FindingSeverity 
 
     if method == "DELETE":
         return FindingSeverity.CRITICAL
+    if method in {"PUT", "PATCH"} and tokens & set(MASS_ASSIGNMENT_KEYWORDS):
+        return FindingSeverity.HIGH
     if method in {"POST", "PATCH", "PUT"} and tokens & set(DESTRUCTIVE_PATH_KEYWORDS):
         return FindingSeverity.CRITICAL
     if tokens & set(SENSITIVE_PATH_KEYWORDS):
@@ -129,6 +149,44 @@ def _build_steps(observations: list[ProxyObservation]) -> list[WorkflowObservedS
     ]
 
 
+def _classify_candidate(observations: list[ProxyObservation], *, actor: str) -> tuple[str, str, FindingSeverity]:
+    final_observation = observations[-1]
+    tokens = _path_tokens(final_observation.path)
+    methods = {item.method.upper() for item in observations}
+    has_transition = any(_looks_like_privilege_transition(item) for item in observations[:-1])
+
+    if final_observation.method.upper() == "DELETE" and has_transition:
+        return (
+            f"{actor} reaches destructive delete path",
+            "Observed a privilege transition before a destructive endpoint, suggesting possible broken function-level authorization.",
+            FindingSeverity.CRITICAL,
+        )
+    if methods & {"PUT", "PATCH"} and tokens & set(MASS_ASSIGNMENT_KEYWORDS):
+        return (
+            f"{actor} reaches possible mass-assignment path",
+            "Observed a writable profile/role-style endpoint that may allow unsafe field updates or privilege mutation.",
+            FindingSeverity.HIGH,
+        )
+    if tokens & set(SENSITIVE_PATH_KEYWORDS) and has_transition:
+        return (
+            f"{actor} reaches sensitive path after role transition",
+            "Observed a transition through member/role-style operations before a sensitive read endpoint, suggesting privilege escalation or excessive exposure.",
+            FindingSeverity.HIGH,
+        )
+    if tokens & set(TENANT_BOUNDARY_KEYWORDS) and any(char.isdigit() for char in final_observation.path):
+        return (
+            f"{actor} reaches direct object path on tenant-boundary resource",
+            "Observed direct-object access on a tenant-scoped resource, suggesting a possible BOLA or tenant-isolation issue.",
+            FindingSeverity.HIGH,
+        )
+
+    return (
+        f"{actor} reaches risky path {final_observation.method} {final_observation.path}",
+        f"Observed actor {actor} traverse {len(observations)} related steps before reaching the risky endpoint {final_observation.method} {final_observation.path}.",
+        _severity_for_observation(final_observation) or FindingSeverity.REVIEW,
+    )
+
+
 def build_candidates_from_proxy_events(scan_id: str, events: list[ScanEvent]) -> list[WorkflowPathFindingCandidate]:
     observations = [observation for event in events if (observation := _observation_from_event(event)) is not None]
     by_actor: dict[str, list[ProxyObservation]] = {}
@@ -158,18 +216,14 @@ def build_candidates_from_proxy_events(scan_id: str, events: list[ScanEvent]) ->
                 continue
 
             seen_path_ids.add(path_id)
-            title = f"{actor} reaches risky path {observation.method} {observation.path}"
-            rationale = (
-                f"Observed actor {actor} traverse {len(selected)} related steps before reaching "
-                f"the risky endpoint {observation.method} {observation.path}."
-            )
+            title, rationale, classified_severity = _classify_candidate(selected, actor=actor)
             candidates.append(
                 WorkflowPathFindingCandidate(
                     scan_id=scan_id,
                     path_id=path_id,
                     title=title,
                     rationale=rationale,
-                    severity=severity,
+                    severity=classified_severity,
                     steps=_build_steps(selected),
                     actor=actor,
                     flagged_paths_increment=1,

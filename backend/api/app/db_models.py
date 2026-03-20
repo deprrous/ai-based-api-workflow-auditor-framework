@@ -96,6 +96,24 @@ class ReplayArtifactRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class ScanArtifactRecord(Base):
+    __tablename__ = "scan_artifacts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    path: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    language: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    format: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    parsed_summary_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class FindingRecord(Base):
     __tablename__ = "findings"
 

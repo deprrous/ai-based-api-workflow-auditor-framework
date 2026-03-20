@@ -105,6 +105,8 @@ Proxy-derived request artifacts are now persisted separately from scan events so
 
 Those replay artifacts now also have built-in retention and redaction controls so the backend can keep replay fidelity for a limited window without exposing raw secrets indefinitely.
 
+The backend also now supports persisted source-code and OpenAPI artifact ingestion plus a provider-neutral AI catalog foundation.
+
 ```bash
 cd frontend
 npm install

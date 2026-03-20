@@ -17,6 +17,8 @@ This module hosts the FastAPI control plane exposed to the frontend.
 - `routers/scans.py` - scan listing, detail, creation, event ingestion, SSE, and scan-linked workflow endpoints.
 - `routers/contracts.py` - runtime producer contract catalog endpoints.
 - `routers/findings.py` - finding listing and detail endpoints.
+- `routers/ai.py` - provider-neutral AI catalog endpoints.
+- `routers/artifacts.py` - source-code and API-spec artifact ingestion and listing endpoints.
 - `routers/planner.py` - deterministic workflow planner execution endpoints.
 - `routers/reports.py` - scan report and evidence export endpoints.
 - `routers/service_accounts.py` - service-account management endpoints for backend workers.
@@ -27,6 +29,8 @@ This module hosts the FastAPI control plane exposed to the frontend.
 - `app/database.py` - SQLAlchemy engine and session management.
 - `app/db_models.py` - relational persistence models for scans, graphs, and events.
 - `services/finding_service.py` - finding retrieval and filtering facade.
+- `services/ai_provider_service.py` - provider-neutral AI catalog service.
+- `services/artifact_service.py` - source-code and OpenAPI ingestion service.
 - `services/planner_service.py` - deterministic planner that derives flagged paths from proxy observations.
 - `services/report_service.py` - scan report and evidence bundle builder.
 - `services/service_account_service.py` - backend worker credential lifecycle and authentication support.
@@ -141,6 +145,8 @@ High-risk workflow paths can now automatically queue verifier jobs so replay wor
 
 The workflow planner can now consume persisted `proxy.http_observed` events and emit `workflow_mapper.path_flagged` contracts automatically.
 
+It can also enrich planned paths with matching ingested source-code and OpenAPI artifact context.
+
 ## Initial endpoints
 
 - `GET /` - service metadata.
@@ -149,6 +155,10 @@ The workflow planner can now consume persisted `proxy.http_observed` events and 
 - `GET /api/v1/scans/{scan_id}` - read one scan run.
 - `GET /api/v1/scans/{scan_id}/events` - list persisted runtime events for the scan.
 - `GET /api/v1/scans/{scan_id}/events/stream` - stream live scan updates over SSE.
+- `POST /api/v1/artifacts/scan/{scan_id}/source` - ingest source code for analyzer and correlation use.
+- `POST /api/v1/artifacts/scan/{scan_id}/api-spec` - ingest OpenAPI or Swagger content.
+- `GET /api/v1/artifacts/scan/{scan_id}` - list ingested artifacts for a scan.
+- `GET /api/v1/artifacts/{artifact_id}` - read artifact detail and parsed summary.
 - `GET /api/v1/scans/{scan_id}/findings` - list findings for a single scan run.
 - `GET /api/v1/scans/{scan_id}/report` - export a scan-level report payload.
 - `GET /api/v1/scans/{scan_id}/evidence-bundle` - export detailed finding evidence for the scan.
@@ -159,6 +169,7 @@ The workflow planner can now consume persisted `proxy.http_observed` events and 
 - `GET /api/v1/scans/{scan_id}/workflow` - read the persisted graph for that scan run.
 - `POST /api/v1/scans` - queue a new scan run and seed its workflow graph.
 - `GET /api/v1/contracts/runtime-ingest` - list supported runtime producer contracts.
+- `GET /api/v1/ai/providers/catalog` - list the provider-neutral AI catalog for future orchestration wiring.
 - `GET /api/v1/findings` - list findings with optional scan, severity, and status filters.
 - `GET /api/v1/findings/{finding_id}` - read detailed finding data and evidence.
 - `GET /api/v1/replay-artifacts/{artifact_id}` - read a persisted replay artifact for worker execution.

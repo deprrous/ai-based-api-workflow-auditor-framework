@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from api.schemas.events import EventSeverity, RecordScanEventRequest
 from api.schemas.planner import PlannerCandidateSummary, PlannerRunResponse
+from api.services.artifact_service import artifact_service
 from api.services.event_service import event_service
 from api.services.scan_service import scan_service
 from api.services.verifier_job_service import verifier_job_service
@@ -17,6 +18,15 @@ class PlannerService:
 
         events = event_service.list_scan_events(scan_id, limit=1000)
         candidates = build_candidates_from_proxy_events(scan_id, events)
+        for candidate in candidates:
+            final_step = candidate.steps[-1]
+            if final_step.method is None or final_step.path is None:
+                continue
+            matches = artifact_service.match_artifacts(scan_id, method=final_step.method, path=final_step.path)
+            if not matches:
+                continue
+            artifact_names = ", ".join(sorted({match.artifact_name for match in matches}))
+            candidate.rationale = f"{candidate.rationale} Matched artifact context in: {artifact_names}."
 
         existing_path_ids = {
             str(event.payload.get("path_id"))
