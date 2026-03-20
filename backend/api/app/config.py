@@ -94,6 +94,10 @@ class Settings:
     ai_openai_compatible_verify_tls: bool
     callback_public_base_url: str
     callback_expectation_ttl_seconds: int
+    browser_execution_enabled: bool
+    browser_engine: str
+    browser_headless: bool
+    browser_timeout_seconds: float
 
 
 @lru_cache
@@ -168,4 +172,8 @@ def get_settings() -> Settings:
             "http://127.0.0.1:8000/api/v1/callbacks/public",
         ),
         callback_expectation_ttl_seconds=int(os.getenv("AUDITOR_CALLBACK_EXPECTATION_TTL_SECONDS", "120")),
+        browser_execution_enabled=_read_bool(os.getenv("AUDITOR_BROWSER_EXECUTION_ENABLED"), default=False),
+        browser_engine=os.getenv("AUDITOR_BROWSER_ENGINE", "chromium"),
+        browser_headless=_read_bool(os.getenv("AUDITOR_BROWSER_HEADLESS"), default=True),
+        browser_timeout_seconds=_read_float(os.getenv("AUDITOR_BROWSER_TIMEOUT_SECONDS"), default=8.0),
     )

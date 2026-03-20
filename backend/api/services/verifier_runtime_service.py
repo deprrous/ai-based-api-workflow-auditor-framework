@@ -18,6 +18,7 @@ from api.schemas.callbacks import CallbackExpectationDetail, CallbackExpectation
 from api.schemas.findings import FindingEvidence, FindingSeverity
 from api.schemas.replay_artifacts import ReplayArtifactMaterial
 from api.schemas.verifier_jobs import (
+    BrowserVisitSpec,
     ReplayAssertionSpec,
     ReplayAssertionType,
     ReplayMutationSpec,
@@ -31,6 +32,7 @@ from api.services.event_service import event_service
 from api.services.callback_service import callback_service
 from api.services.replay_artifact_service import replay_artifact_service
 from api.services.verifier_job_service import verifier_job_service
+from tools.verifier.browser_execution import BrowserExecutor, PlaywrightBrowserExecutor
 from tools.verifier.response_analysis import evaluate_assertions
 from tools.verifier.worker import VerifierReplayResult, build_ingest_request
 
@@ -205,6 +207,15 @@ def _apply_set_cookie(dynamic_headers: dict[str, str], response_headers: dict[st
         dynamic_headers["Cookie"] = "; ".join(cookie_pairs)
 
 
+def _browser_base_url(base_url: str | None) -> str:
+    if not base_url:
+        raise RuntimeError("A replay base URL is required for headless browser verification.")
+    split = parse.urlsplit(base_url)
+    if split.scheme and split.netloc:
+        return f"{split.scheme}://{split.netloc}"
+    return base_url
+
+
 def _set_json_path(document: dict[str, object], dotted_path: str, value: object) -> None:
     segments = [segment for segment in dotted_path.split(".") if segment]
     if not segments:
@@ -305,6 +316,7 @@ class HttpReplayVerifierExecutor:
     timeout_seconds: float = 5.0
     verify_tls: bool = True
     transport: Callable[..., ReplayHttpResult] = _default_http_transport
+    browser_executor: BrowserExecutor | None = None
 
     def _artifact_for_request(self, request_spec: ReplayRequestSpec) -> ReplayArtifactMaterial | None:
         if request_spec.artifact_id is None:
@@ -372,12 +384,13 @@ class HttpReplayVerifierExecutor:
             if baseline_result is not None:
                 baseline_results[response_result.request.request_fingerprint] = baseline_result
             _apply_set_cookie(dynamic_headers, response_result.response_headers)
+        self._run_browser_plan(replay_plan, callback_context=callback_context, dynamic_headers=dynamic_headers, default_actor=default_actor)
         final_result = response_results[-1]
         assertions_passed, assertion_explanations = evaluate_assertions(
             replay_plan.assertions,
             response_results,
             baseline_results=baseline_results,
-            callback_received=self._collect_callback_assertion_results(replay_plan, callback_context=callback_context),
+            callback_details=self._collect_callback_assertion_results(replay_plan, callback_context=callback_context),
         )
         if replay_plan.assertions and not assertions_passed:
             return VerifierExecutionOutcome(
@@ -501,27 +514,52 @@ class HttpReplayVerifierExecutor:
         replay_plan: ReplayPlan,
         *,
         callback_context: dict[str, CallbackExpectationDetail],
-    ) -> dict[str, bool]:
-        results: dict[str, bool] = {}
+    ) -> dict[str, CallbackExpectationDetail]:
+        results: dict[str, CallbackExpectationDetail] = {}
         for assertion in replay_plan.assertions:
-            if assertion.type != ReplayAssertionType.CALLBACK_RECEIVED or not assertion.callback_label:
+            if assertion.type not in {
+                ReplayAssertionType.CALLBACK_RECEIVED,
+                ReplayAssertionType.CALLBACK_METADATA_SCORE_GTE,
+                ReplayAssertionType.CALLBACK_SOURCE_CLASS_IN,
+            } or not assertion.callback_label:
                 continue
             expectation = callback_context.get(assertion.callback_label)
             if expectation is None:
-                results[assertion.callback_label] = False
                 continue
             deadline = time.monotonic() + assertion.wait_seconds
-            received = False
+            current = expectation
             while True:
-                current = callback_service.get_expectation_by_token(expectation.token)
-                if current is not None and current.status == CallbackExpectationStatus.RECEIVED:
-                    received = True
+                refreshed = callback_service.get_expectation_by_token(expectation.token)
+                if refreshed is not None:
+                    current = refreshed
+                if current.status == CallbackExpectationStatus.RECEIVED:
                     break
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.1)
-            results[assertion.callback_label] = received
+            results[assertion.callback_label] = current
         return results
+
+    def _run_browser_plan(
+        self,
+        replay_plan: ReplayPlan,
+        *,
+        callback_context: dict[str, CallbackExpectationDetail],
+        dynamic_headers: dict[str, str],
+        default_actor: str | None,
+    ) -> None:
+        if replay_plan.browser_plan is None or not replay_plan.browser_plan.visits:
+            return
+        if self.browser_executor is None:
+            return
+        if self.base_url is None:
+            return
+
+        for visit in replay_plan.browser_plan.visits:
+            actor_key = visit.actor or default_actor
+            headers = self.actor_headers.get(actor_key or "", {})
+            merged_headers = _merge_headers(headers, dynamic_headers)
+            self.browser_executor.visit(visit, base_url=_browser_base_url(self.base_url), headers=merged_headers)
 
     def _execute_request(
         self,
@@ -726,12 +764,20 @@ def build_runtime_service(*, settings: Settings) -> VerifierRuntimeService | Non
     if normalized_mode == "http-replay":
         if settings.verifier_replay_base_url is None:
             raise ValueError("AUDITOR_VERIFIER_REPLAY_BASE_URL must be configured for http-replay mode.")
+        browser_executor = None
+        if settings.browser_execution_enabled:
+            browser_executor = PlaywrightBrowserExecutor(
+                headless=settings.browser_headless,
+                timeout_seconds=settings.browser_timeout_seconds,
+                browser_name=settings.browser_engine,
+            )
         return VerifierRuntimeService(
             executor=HttpReplayVerifierExecutor(
                 base_url=settings.verifier_replay_base_url,
                 actor_headers=settings.verifier_replay_actor_headers,
                 timeout_seconds=settings.verifier_replay_timeout,
                 verify_tls=settings.verifier_replay_verify_tls,
+                browser_executor=browser_executor,
             ),
             worker_id=worker_id,
             poll_interval_seconds=poll_interval_seconds,

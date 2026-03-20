@@ -6,9 +6,11 @@ from datetime import timedelta, timezone
 from api.app.config import get_settings
 from api.app.database import session_scope
 from api.repositories.replay_artifact_repository import ReplayArtifactRepository
-from api.schemas.callbacks import CallbackKind
+from api.schemas.callbacks import CallbackExpectationStatus, CallbackKind, CallbackSourceClass
 from api.services.callback_service import callback_service
 from api.schemas.verifier_jobs import (
+    BrowserPlan,
+    BrowserVisitSpec,
     ClaimVerifierJobRequest,
     CompleteVerifierJobRequest,
     ReplayMutationSpec,
@@ -668,3 +670,87 @@ def test_public_callback_endpoint_records_browser_like_xss_confirmation(client) 
     detail = detail_response.json()
     assert detail["status"] == "received"
     assert len(detail["events"]) == 1
+
+
+def test_http_replay_executor_uses_browser_executor_for_xss_callback(client) -> None:
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
+    assert job is not None
+
+    job.title = "Browser XSS path"
+    job.payload.vulnerability_class = "reflected_xss"
+    job.payload.replay_plan.mutations = []
+    job.payload.replay_plan.assertions = [
+        {
+            "type": "callback_received",
+            "target_request_fingerprint": "fp-delete",
+            "description": "Browser callback should be received.",
+            "callback_label": "reflected_xss_oob",
+            "wait_seconds": 1,
+        }
+    ]
+    job.payload.replay_plan.browser_plan = BrowserPlan(
+        visits=[BrowserVisitSpec(path="/preview?q=test", actor="partner-member", wait_seconds=1, callback_labels=["reflected_xss_oob"])]
+    )
+
+    class FakeBrowserExecutor:
+        def visit(self, visit, *, base_url, headers):
+            expectation = callback_service.list_expectations(scan_id)[0]
+            callback_service.record_event(
+                token=expectation.token,
+                method="GET",
+                path=f"/api/v1/callbacks/public/{expectation.token}",
+                query_string="browser=true",
+                headers={"User-Agent": "Mozilla/5.0 HeadlessChrome"},
+                body_excerpt=None,
+                source_ip="198.51.100.24",
+                user_agent="Mozilla/5.0 HeadlessChrome",
+            )
+            return f"{base_url}{visit.path}"
+
+    executor = HttpReplayVerifierExecutor(
+        base_url="https://qa.example.internal/api/v1",
+        actor_headers={"partner-member": {"Authorization": "Bearer token"}},
+        transport=lambda request_spec, **kwargs: ReplayHttpResult(
+            request=request_spec,
+            url=f"https://qa.example.internal{request_spec.path}",
+            status_code=200,
+            body_excerpt="ok",
+            response_headers={},
+            duration_ms=20,
+        ),
+        browser_executor=FakeBrowserExecutor(),
+    )
+
+    outcome = executor.execute(job)
+    assert outcome.confirmed is True
+
+
+def test_callback_analysis_includes_fingerprint_metadata_and_browser_signal(client) -> None:
+    expectation = callback_service.create_expectation(
+        scan_id="bootstrap-scan",
+        verifier_job_id=None,
+        kind=CallbackKind.SSRF,
+        label="ssrf-analysis",
+    )
+    assert expectation is not None
+
+    callback_service.record_event(
+        token=expectation.token,
+        method="GET",
+        path=f"/api/v1/callbacks/public/{expectation.token}",
+        query_string="probe=latest/meta-data&instance-id=i-12345",
+        headers={"User-Agent": "Mozilla/5.0 HeadlessChrome", "X-Test": "Metadata-Flavor"},
+        body_excerpt="ami-id: ami-12345",
+        source_ip="127.0.0.1",
+        user_agent="Mozilla/5.0 HeadlessChrome",
+    )
+
+    detail = callback_service.get_expectation_by_token(expectation.token)
+    assert detail is not None
+    assert detail.status == CallbackExpectationStatus.RECEIVED
+    assert detail.events[0].analysis.metadata_score > 0
+    assert detail.events[0].analysis.browser_like is True
+    assert detail.events[0].analysis.source_classification == CallbackSourceClass.LOOPBACK
+    assert detail.events[0].analysis.fingerprint

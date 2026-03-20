@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from api.schemas.callbacks import CallbackSourceClass
 from api.schemas.findings import FindingSeverity
 from api.schemas.planner import VerifierStrategy, VulnerabilityClass
 from api.schemas.workflows import WorkflowEdge, WorkflowNode
@@ -45,6 +46,8 @@ class ReplayAssertionType(StrEnum):
     STATUS_DIFFERS_FROM_BASELINE = "status_differs_from_baseline"
     BODY_DIFFERS_FROM_BASELINE = "body_differs_from_baseline"
     CALLBACK_RECEIVED = "callback_received"
+    CALLBACK_METADATA_SCORE_GTE = "callback_metadata_score_gte"
+    CALLBACK_SOURCE_CLASS_IN = "callback_source_class_in"
 
 
 class ReplayMutationSpec(BaseModel):
@@ -67,9 +70,21 @@ class ReplayAssertionSpec(BaseModel):
     regex_pattern: str | None = Field(default=None, max_length=500)
     header_name: str | None = Field(default=None, max_length=120)
     status_codes: list[int] = Field(default_factory=list)
+    source_classes: list[CallbackSourceClass] = Field(default_factory=list)
     threshold_ms: int | None = Field(default=None, ge=0)
     callback_label: str | None = Field(default=None, max_length=120)
     wait_seconds: int = Field(default=0, ge=0, le=30)
+
+
+class BrowserVisitSpec(BaseModel):
+    path: str = Field(min_length=1, max_length=400)
+    actor: str | None = Field(default=None, max_length=120)
+    wait_seconds: int = Field(default=2, ge=0, le=30)
+    callback_labels: list[str] = Field(default_factory=list)
+
+
+class BrowserPlan(BaseModel):
+    visits: list[BrowserVisitSpec] = Field(default_factory=list)
 
 
 class ReplayRefreshRequestSpec(BaseModel):
@@ -88,6 +103,7 @@ class ReplayPlan(BaseModel):
     success_status_codes: list[int] = Field(default_factory=lambda: [200])
     mutations: list[ReplayMutationSpec] = Field(default_factory=list)
     assertions: list[ReplayAssertionSpec] = Field(default_factory=list)
+    browser_plan: BrowserPlan | None = None
     refresh_requests: list[ReplayRefreshRequestSpec] = Field(default_factory=list)
     refresh_on_status_codes: list[int] = Field(default_factory=lambda: [401, 419, 440])
     retry_after_refresh: bool = True

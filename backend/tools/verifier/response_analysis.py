@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from api.schemas.callbacks import CallbackExpectationDetail
 from api.schemas.verifier_jobs import ReplayAssertionSpec, ReplayAssertionType
 
 if TYPE_CHECKING:
@@ -18,7 +19,7 @@ def evaluate_assertions(
     results: list[ReplayHttpResult],
     *,
     baseline_results: dict[str, ReplayHttpResult] | None = None,
-    callback_received: dict[str, bool] | None = None,
+    callback_details: dict[str, CallbackExpectationDetail] | None = None,
 ) -> tuple[bool, list[str]]:
     if not assertions:
         return True, []
@@ -90,11 +91,34 @@ def evaluate_assertions(
             return False, explanation_lines
 
         if assertion.type == ReplayAssertionType.CALLBACK_RECEIVED:
-            callback_received = callback_received or {}
-            if assertion.callback_label and callback_received.get(assertion.callback_label):
+            callback_details = callback_details or {}
+            detail = callback_details.get(assertion.callback_label or "")
+            if assertion.callback_label and detail is not None and detail.status.value == "received":
                 explanation_lines.append(f"Assertion satisfied: {assertion.description}")
                 continue
             explanation_lines.append(f"Assertion failed: callback '{assertion.callback_label}' was not received.")
+            return False, explanation_lines
+
+        if assertion.type == ReplayAssertionType.CALLBACK_METADATA_SCORE_GTE:
+            callback_details = callback_details or {}
+            detail = callback_details.get(assertion.callback_label or "")
+            if detail is not None and detail.events and assertion.threshold_ms is not None:
+                best_score = max(event.analysis.metadata_score for event in detail.events)
+                if best_score >= assertion.threshold_ms:
+                    explanation_lines.append(f"Assertion satisfied: {assertion.description}")
+                    continue
+            explanation_lines.append(f"Assertion failed: callback '{assertion.callback_label}' metadata score was below the threshold.")
+            return False, explanation_lines
+
+        if assertion.type == ReplayAssertionType.CALLBACK_SOURCE_CLASS_IN:
+            callback_details = callback_details or {}
+            detail = callback_details.get(assertion.callback_label or "")
+            if detail is not None and detail.events and assertion.source_classes:
+                observed = {event.analysis.source_classification for event in detail.events}
+                if any(source_class in observed for source_class in assertion.source_classes):
+                    explanation_lines.append(f"Assertion satisfied: {assertion.description}")
+                    continue
+            explanation_lines.append(f"Assertion failed: callback '{assertion.callback_label}' did not match the expected source classification.")
             return False, explanation_lines
 
     return True, explanation_lines

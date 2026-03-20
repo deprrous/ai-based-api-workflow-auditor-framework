@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from api.app.config import get_settings
 from api.schemas.callbacks import CallbackExpectationDetail, CallbackExpectationStatus, CallbackExpectationSummary, CallbackKind
 from api.services.store import audit_store
+from tools.verifier.callback_analysis import analyze_callback_event
 
 
 class CallbackService:
@@ -62,6 +63,27 @@ class CallbackService:
     def callback_received(self, token: str) -> bool:
         expectation = self.get_expectation_by_token(token)
         return expectation is not None and expectation.status == CallbackExpectationStatus.RECEIVED
+
+    @staticmethod
+    def analyze_event(
+        *,
+        method: str,
+        path: str,
+        query_string: str | None,
+        headers: dict[str, str],
+        body_excerpt: str | None,
+        source_ip: str | None,
+        user_agent: str | None,
+    ):
+        return analyze_callback_event(
+            method=method,
+            path=path,
+            query_string=query_string,
+            headers=headers,
+            body_excerpt=body_excerpt,
+            source_ip=source_ip,
+            user_agent=user_agent,
+        )
 
 
 @dataclass(slots=True)

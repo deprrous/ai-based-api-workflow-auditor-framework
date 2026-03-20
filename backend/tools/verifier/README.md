@@ -34,6 +34,12 @@ The verifier runtime also supports a real `http-replay` mode.
 - the verifier can consume callback evidence through public callback capture endpoints
 - response analyzers can confirm findings through body markers, regex matches, timing thresholds, and cross-actor authorization drift
 
+## Browser execution support
+
+- browser plans can now drive a real headless browser executor
+- Playwright-backed execution is supported through the backend runtime configuration
+- this is intended for DOM/XSS-style confirmation where plain HTTP replay is not enough
+
 This is the first real replay executor path in the backend.
 
 ## Why this matters

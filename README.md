@@ -127,6 +127,8 @@ The deterministic backend planner now has explicit vulnerability coverage rules 
 
 The verifier now also supports out-of-band callback confirmation paths and taint-style source/sink correlation for stronger exploit hypotheses.
 
+It now also has headless-browser execution hooks for DOM/XSS-style verification on top of HTTP replay.
+
 ```bash
 cd frontend
 npm install

@@ -104,6 +104,13 @@ For a real backend replay executor, configure:
 - `AUDITOR_VERIFIER_REPLAY_BASE_URL=https://target.example.com`
 - `AUDITOR_VERIFIER_REPLAY_ACTOR_HEADERS_JSON={"actor-id":{"Authorization":"Bearer token"}}`
 
+For browser-assisted XSS verification, also configure:
+
+- `AUDITOR_BROWSER_EXECUTION_ENABLED=true`
+- `AUDITOR_BROWSER_ENGINE=chromium`
+- `AUDITOR_BROWSER_HEADLESS=true`
+- `AUDITOR_BROWSER_TIMEOUT_SECONDS=8.0`
+
 The `http-replay` executor uses replay plans attached to queued verifier jobs and performs real HTTP requests against the configured target.
 
 Current replay mutation support includes:
@@ -122,6 +129,13 @@ Current replay assertion and response analysis support includes:
 - cross-actor authorization drift comparison
 
 Out-of-band callback support is now available through callback expectations and public callback capture endpoints.
+
+Callback events now include:
+
+- request fingerprinting
+- source IP classification
+- metadata marker scoring
+- browser-like signal detection
 
 Raw replayable request artifacts are stored separately from scan event payloads so workers can reproduce captured POST, PATCH, cookie, and header state more accurately.
 

@@ -32,6 +32,7 @@ from api.schemas.events import (
 from api.schemas.findings import ContextReference, FindingDetail, FindingEvidence, FindingSeverity, FindingStatus, FindingSummary, FindingUpsert
 from api.schemas.ai import AiPlanningProposal
 from api.schemas.callbacks import CallbackEventDetail, CallbackExpectationDetail, CallbackExpectationStatus, CallbackExpectationSummary, CallbackKind
+from tools.verifier.callback_analysis import analyze_callback_event
 from api.schemas.producer_contracts import ProxyHttpObservedContract, VerifierFindingConfirmedContract, WorkflowMapperPathFlaggedContract
 from api.schemas.planner import PlannerCandidateSummary
 from api.schemas.planning_runs import PlanningMode, PlanningRunDetail, PlanningRunSummary
@@ -204,6 +205,15 @@ def _callback_event_record_to_detail(record: CallbackEventRecord) -> CallbackEve
         body_excerpt=record.body_excerpt,
         source_ip=record.source_ip,
         user_agent=record.user_agent,
+        analysis=analyze_callback_event(
+            method=record.method,
+            path=record.path,
+            query_string=record.query_string,
+            headers=dict(record.headers_json),
+            body_excerpt=record.body_excerpt,
+            source_ip=record.source_ip,
+            user_agent=record.user_agent,
+        ),
         created_at=record.created_at,
     )
 

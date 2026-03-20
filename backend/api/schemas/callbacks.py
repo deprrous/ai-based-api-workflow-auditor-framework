@@ -17,6 +17,23 @@ class CallbackExpectationStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class CallbackSourceClass(StrEnum):
+    PUBLIC = "public"
+    PRIVATE = "private"
+    LOOPBACK = "loopback"
+    LINK_LOCAL = "link_local"
+    RESERVED = "reserved"
+    UNKNOWN = "unknown"
+
+
+class CallbackEventAnalysis(BaseModel):
+    fingerprint: str
+    source_classification: CallbackSourceClass
+    metadata_score: int = Field(ge=0, le=100)
+    matched_markers: list[str] = Field(default_factory=list)
+    browser_like: bool = False
+
+
 class CallbackExpectationSummary(BaseModel):
     id: str
     scan_id: str
@@ -42,6 +59,7 @@ class CallbackEventDetail(BaseModel):
     body_excerpt: str | None = None
     source_ip: str | None = None
     user_agent: str | None = None
+    analysis: CallbackEventAnalysis
     created_at: datetime
 
 

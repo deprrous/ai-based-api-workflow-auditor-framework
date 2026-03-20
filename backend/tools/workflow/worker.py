@@ -9,12 +9,15 @@ from urllib import error, request
 from pydantic import BaseModel, Field, model_validator
 
 from api.schemas.events import EventSeverity, EventSource, IngestScanEventRequest
+from api.schemas.callbacks import CallbackSourceClass
 from api.schemas.findings import FindingSeverity
 from api.schemas.planner import VerifierStrategy, VulnerabilityClass
 from api.schemas.producer_contracts import WorkflowMapperPathFlaggedContract
 from api.schemas.verifier_jobs import (
     ReplayAssertionSpec,
     ReplayAssertionType,
+    BrowserPlan,
+    BrowserVisitSpec,
     ReplayMutationSpec,
     ReplayMutationType,
     ReplayPlan,
@@ -152,6 +155,7 @@ def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | N
 
     mutations = build_mutations(candidate, replay_requests)
     assertions = build_assertions(candidate, replay_requests)
+    browser_plan = build_browser_plan(candidate, replay_requests)
 
     success_status_codes = [200, 202, 204]
     if replay_requests[-1].method.upper() in {"DELETE", "PATCH", "PUT"}:
@@ -165,6 +169,7 @@ def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | N
         success_status_codes=success_status_codes,
         mutations=mutations,
         assertions=assertions,
+        browser_plan=browser_plan,
     )
 
 
@@ -393,30 +398,80 @@ def build_assertions(candidate: WorkflowPathFindingCandidate, replay_requests: l
                     callback_label="ssrf_oob",
                     wait_seconds=2,
                 ),
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.CALLBACK_METADATA_SCORE_GTE,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="SSRF callback should include metadata-style indicators when internal targets are reached.",
+                    callback_label="ssrf_oob",
+                    threshold_ms=20,
+                    wait_seconds=2,
+                ),
             ]
         )
 
     if candidate.vulnerability_class == "stored_xss":
-        assertions.append(
-            ReplayAssertionSpec(
-                type=ReplayAssertionType.BODY_CONTAINS,
-                target_request_fingerprint=final_request.request_fingerprint,
-                description="Stored XSS marker should appear in a later read response after being written.",
-                expected_text="auditor-stored-xss-marker",
-            )
+        assertions.extend(
+            [
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.CALLBACK_RECEIVED,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="Stored XSS payload should trigger a browser-visible callback when rendered.",
+                    callback_label="stored_xss_oob",
+                    wait_seconds=2,
+                ),
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.CALLBACK_SOURCE_CLASS_IN,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="Stored XSS callback should look browser-like when executed in a page context.",
+                    callback_label="stored_xss_oob",
+                    source_classes=[CallbackSourceClass.PUBLIC],
+                    wait_seconds=2,
+                ),
+            ]
         )
 
     if candidate.vulnerability_class == "reflected_xss":
-        assertions.append(
-            ReplayAssertionSpec(
-                type=ReplayAssertionType.BODY_CONTAINS,
-                target_request_fingerprint=final_request.request_fingerprint,
-                description="Reflected XSS marker should be reflected into the response body.",
-                expected_text="auditor-reflected-xss-marker",
-            )
+        assertions.extend(
+            [
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.BODY_CONTAINS,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="Reflected XSS marker should be reflected into the response body.",
+                    expected_text="auditor-reflected-xss-marker",
+                ),
+                ReplayAssertionSpec(
+                    type=ReplayAssertionType.CALLBACK_RECEIVED,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    description="Reflected XSS payload should trigger a browser-visible callback when the page is rendered.",
+                    callback_label="reflected_xss_oob",
+                    wait_seconds=2,
+                ),
+            ]
         )
 
     return assertions
+
+
+def build_browser_plan(candidate: WorkflowPathFindingCandidate, replay_requests: list[ReplayRequestSpec]) -> BrowserPlan | None:
+    if candidate.vulnerability_class not in {"stored_xss", "reflected_xss"}:
+        return None
+
+    visit_request = replay_requests[-1]
+    if candidate.vulnerability_class == "stored_xss":
+        get_requests = [request for request in replay_requests if request.method.upper() == "GET"]
+        if get_requests:
+            visit_request = get_requests[-1]
+    callback_label = "stored_xss_oob" if candidate.vulnerability_class == "stored_xss" else "reflected_xss_oob"
+    return BrowserPlan(
+        visits=[
+            BrowserVisitSpec(
+                path=visit_request.path,
+                actor=visit_request.actor or candidate.actor,
+                wait_seconds=2,
+                callback_labels=[callback_label],
+            )
+        ]
+    )
 
 
 def build_workflow_mapper_contract(candidate: WorkflowPathFindingCandidate) -> WorkflowMapperPathFlaggedContract:
