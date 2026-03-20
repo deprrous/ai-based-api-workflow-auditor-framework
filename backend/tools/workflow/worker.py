@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from api.schemas.events import EventSeverity, EventSource, IngestScanEventRequest
 from api.schemas.findings import FindingSeverity
+from api.schemas.planner import VerifierStrategy, VulnerabilityClass
 from api.schemas.producer_contracts import WorkflowMapperPathFlaggedContract
 from api.schemas.verifier_jobs import ReplayPlan, ReplayRequestSpec
 from api.schemas.workflows import WorkflowEdge, WorkflowNode, WorkflowNodeStatus, WorkflowNodeType
@@ -54,6 +55,11 @@ class WorkflowPathFindingCandidate(BaseModel):
     title: str = Field(min_length=3, max_length=200)
     rationale: str = Field(min_length=3, max_length=1500)
     severity: FindingSeverity
+    vulnerability_class: VulnerabilityClass
+    confidence: int = Field(ge=0, le=100)
+    matched_rule: str = Field(min_length=3, max_length=120)
+    verifier_strategy: VerifierStrategy
+    matched_signals: list[str] = Field(default_factory=list)
     steps: list[WorkflowObservedStep] = Field(min_length=2)
     actor: str | None = Field(default=None, max_length=120)
     flagged_paths_increment: int = Field(default=1, ge=0)
@@ -157,7 +163,12 @@ def build_workflow_mapper_contract(candidate: WorkflowPathFindingCandidate) -> W
         path_id=candidate.path_id or _stable_id("path", candidate.title),
         title=candidate.title,
         severity=candidate.severity,
+        vulnerability_class=candidate.vulnerability_class,
+        confidence=candidate.confidence,
+        matched_rule=candidate.matched_rule,
+        verifier_strategy=candidate.verifier_strategy,
         rationale=candidate.rationale,
+        matched_signals=list(candidate.matched_signals),
         nodes=nodes,
         edges=edges,
         flagged_paths_increment=candidate.flagged_paths_increment,

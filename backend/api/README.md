@@ -147,6 +147,23 @@ The workflow planner can now consume persisted `proxy.http_observed` events and 
 
 It can also enrich planned paths with matching ingested source-code and OpenAPI artifact context.
 
+Current explicit coverage classes in the backend planner:
+
+- `bola_idor`
+- `bfla`
+- `tenant_isolation`
+- `mass_assignment`
+- `excessive_data_exposure`
+- `unsafe_destructive_action`
+
+Planner outputs now carry:
+
+- vulnerability class
+- confidence score
+- matched rule id
+- verifier strategy
+- matched signals and explanation
+
 ## Initial endpoints
 
 - `GET /` - service metadata.

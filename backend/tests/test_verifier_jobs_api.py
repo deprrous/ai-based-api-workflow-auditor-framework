@@ -25,7 +25,12 @@ def test_path_flagged_event_queues_verifier_job(client):
                 "path_id": "path-destructive-delete",
                 "title": "Partner member reaches destructive delete path",
                 "severity": "high",
+                "vulnerability_class": "unsafe_destructive_action",
+                "confidence": 90,
+                "matched_rule": "unsafe_destructive_action",
+                "verifier_strategy": "destructive_action_replay",
                 "rationale": "The shared membership flow reaches the destructive delete action without an explicit owner gate.",
+                "matched_signals": ["destructive-action", "DELETE"],
                 "nodes": [
                     {
                         "id": "projects",

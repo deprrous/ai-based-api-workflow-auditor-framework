@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-from api.app.config import get_settings
 from api.schemas.ai import AiPlanningCandidate
 from orchestrator.providers.openai_compatible_planner import OpenAiCompatiblePlanningProvider
 
@@ -51,8 +50,13 @@ def test_openai_compatible_planner_parses_structured_response() -> None:
                 path_id="planned-path-1",
                 title="Delete path",
                 severity="critical",
+                vulnerability_class="bfla",
+                confidence=91,
+                matched_rule="bfla",
+                verifier_strategy="privilege_transition_replay",
                 rationale="Destructive path after role change.",
                 step_count=3,
+                matched_signals=["privilege-transition", "DELETE"],
                 workflow_node_ids=["a", "b", "c"],
             )
         ],

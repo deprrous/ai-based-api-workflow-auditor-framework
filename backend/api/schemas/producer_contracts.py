@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from api.schemas.findings import FindingSeverity, FindingUpsert
+from api.schemas.planner import VerifierStrategy, VulnerabilityClass
 from api.schemas.replay_artifacts import ReplayArtifactInput
 from api.schemas.verifier_jobs import ReplayPlan
 from api.schemas.workflows import WorkflowEdge, WorkflowNode
@@ -40,7 +41,12 @@ class WorkflowMapperPathFlaggedContract(BaseModel):
     path_id: str = Field(min_length=3, max_length=120)
     title: str = Field(min_length=3, max_length=200)
     severity: FindingSeverity
+    vulnerability_class: VulnerabilityClass
+    confidence: int = Field(ge=0, le=100)
+    matched_rule: str = Field(min_length=3, max_length=120)
+    verifier_strategy: VerifierStrategy
     rationale: str = Field(min_length=3, max_length=1500)
+    matched_signals: list[str] = Field(default_factory=list)
     nodes: list[WorkflowNode] = Field(default_factory=list)
     edges: list[WorkflowEdge] = Field(default_factory=list)
     flagged_paths_increment: int = Field(default=1, ge=0)

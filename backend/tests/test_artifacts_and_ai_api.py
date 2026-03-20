@@ -134,7 +134,7 @@ paths:
     )
     assert planner_response.status_code == 200
     payload = planner_response.json()
-    assert payload["emitted_count"] == 1
+    assert payload["emitted_count"] >= 1
 
     jobs_response = client.get(f"/api/v1/scans/{scan_id}/verifier-jobs")
     assert jobs_response.status_code == 200

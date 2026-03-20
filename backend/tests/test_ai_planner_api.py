@@ -94,6 +94,7 @@ def test_ai_planner_mock_provider_can_preview_candidates_without_emitting(client
     assert payload["suggested_count"] >= 1
     assert payload["emitted_count"] == 0
     assert payload["apply"] is False
+    assert payload["proposals"][0]["tags"]
     assert any(proposal["include_in_plan"] for proposal in payload["proposals"])
 
 

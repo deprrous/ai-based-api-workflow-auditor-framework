@@ -17,6 +17,11 @@ def _sample_candidate() -> WorkflowPathFindingCandidate:
         title="Partner member reaches destructive project delete path",
         rationale="Captured invitation and membership steps lead into a destructive delete action without an explicit owner gate.",
         severity="high",
+        vulnerability_class="bfla",
+        confidence=91,
+        matched_rule="bfla",
+        verifier_strategy="privilege_transition_replay",
+        matched_signals=["privilege-transition", "DELETE", "members"],
         steps=[
             WorkflowObservedStep(
                 node_id="projects",
@@ -66,6 +71,9 @@ def test_workflow_mapper_builds_flagged_path_contract() -> None:
 
     assert contract.kind == "workflow_mapper.path_flagged"
     assert contract.flagged_paths_increment == 1
+    assert contract.vulnerability_class == "bfla"
+    assert contract.confidence == 91
+    assert contract.verifier_strategy == "privilege_transition_replay"
     assert len(contract.nodes) == 4
     assert contract.nodes[-1].type == "observation"
     assert len(contract.edges) == 3

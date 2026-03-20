@@ -42,7 +42,12 @@ class MockPlanningProvider:
         for candidate in candidates:
             artifact_bonus = 8 if "Matched artifact context" in candidate.rationale else 0
             destructive_bonus = 8 if any(token in candidate.title.lower() for token in ("delete", "admin", "key", "tenant")) else 0
-            priority_score = min(100, _severity_score(candidate.severity) + artifact_bonus + destructive_bonus)
+            coverage_bonus = 6 if candidate.vulnerability_class in {"bfla", "bola_idor", "tenant_isolation", "unsafe_destructive_action"} else 0
+            signal_bonus = min(10, len(candidate.matched_signals) * 2)
+            priority_score = min(
+                100,
+                _severity_score(candidate.severity) + artifact_bonus + destructive_bonus + coverage_bonus + signal_bonus + max(0, candidate.confidence - 70) // 2,
+            )
             include_in_plan = priority_score >= min_priority_score
             proposals.append(
                 AiPlanningProposal(
@@ -51,11 +56,11 @@ class MockPlanningProvider:
                     priority_score=priority_score,
                     recommended_severity=candidate.severity,
                     suggested_rationale=(
-                        f"AI-assisted mock planner ranked this path at {priority_score} based on deterministic severity, "
-                        f"artifact context, and risk keywords. {candidate.rationale}"
+                        f"AI-assisted mock planner ranked this {candidate.vulnerability_class.value if hasattr(candidate.vulnerability_class, 'value') else candidate.vulnerability_class} path at {priority_score} "
+                        f"using severity, rule confidence, matched signals, artifact context, and risk keywords. {candidate.rationale}"
                     ),
                     explanation="Mock planner uses deterministic heuristics so backend AI planning can be exercised without external model access.",
-                    tags=["mock-ai", candidate.severity.lower()],
+                    tags=["mock-ai", candidate.severity.lower(), str(candidate.vulnerability_class), *candidate.matched_signals[:4]],
                 )
             )
 

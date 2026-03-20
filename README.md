@@ -113,6 +113,15 @@ The backend also now supports persisted source-code and OpenAPI artifact ingesti
 
 It also now supports AI-assisted planning on top of deterministic candidates, with a no-key `mock` provider for local backend testing and an `openai-compatible` path for future real model integration.
 
+The deterministic backend planner now has explicit vulnerability coverage rules for:
+
+- BOLA / IDOR
+- BFLA
+- tenant-isolation failures
+- mass assignment
+- excessive data exposure
+- unsafe destructive actions
+
 ```bash
 cd frontend
 npm install

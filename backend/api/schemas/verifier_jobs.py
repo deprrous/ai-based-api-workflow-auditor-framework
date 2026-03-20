@@ -6,6 +6,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 from api.schemas.findings import FindingSeverity
+from api.schemas.planner import VerifierStrategy, VulnerabilityClass
 from api.schemas.workflows import WorkflowEdge, WorkflowNode
 
 
@@ -36,6 +37,11 @@ class VerifierJobPayload(BaseModel):
     path_id: str = Field(min_length=3, max_length=120)
     title: str = Field(min_length=3, max_length=200)
     rationale: str = Field(min_length=3, max_length=1500)
+    vulnerability_class: VulnerabilityClass
+    confidence: int = Field(ge=0, le=100)
+    matched_rule: str = Field(min_length=3, max_length=120)
+    verifier_strategy: VerifierStrategy
+    matched_signals: list[str] = Field(default_factory=list)
     workflow_node_ids: list[str] = Field(default_factory=list)
     workflow_nodes: list[WorkflowNode] = Field(default_factory=list)
     workflow_edges: list[WorkflowEdge] = Field(default_factory=list)

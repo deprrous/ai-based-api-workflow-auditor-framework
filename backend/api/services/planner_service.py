@@ -78,6 +78,12 @@ class PlannerService:
                 path_id=candidate.path_id or "",
                 title=candidate.title,
                 severity=candidate.severity,
+                vulnerability_class=candidate.vulnerability_class,
+                confidence=candidate.confidence,
+                matched_rule=candidate.matched_rule,
+                verifier_strategy=candidate.verifier_strategy,
+                match_explanation=candidate.rationale,
+                matched_signals=list(candidate.matched_signals),
                 step_count=len(candidate.steps),
                 workflow_node_ids=[step.node_id for step in candidate.steps],
             )
@@ -156,8 +162,13 @@ class PlannerService:
                 path_id=candidate.path_id or "",
                 title=candidate.title,
                 severity=candidate.severity.value,
+                vulnerability_class=candidate.vulnerability_class,
+                confidence=candidate.confidence,
+                matched_rule=candidate.matched_rule,
+                verifier_strategy=candidate.verifier_strategy,
                 rationale=candidate.rationale,
                 step_count=len(candidate.steps),
+                matched_signals=list(candidate.matched_signals),
                 workflow_node_ids=[step.node_id for step in candidate.steps],
             )
             for candidate in limited_candidates
@@ -177,6 +188,7 @@ class PlannerService:
                 continue
 
             candidate.rationale = f"{proposal.suggested_rationale} AI note: {proposal.explanation}"
+            candidate.matched_signals = [*candidate.matched_signals, *proposal.tags]
             selected_candidates.append(candidate)
 
         queued_job_count_before = len(verifier_job_service.list_verifier_jobs(scan_id))

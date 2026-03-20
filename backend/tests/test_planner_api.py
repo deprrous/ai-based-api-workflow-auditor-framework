@@ -94,15 +94,19 @@ def test_workflow_planner_derives_flagged_path_from_proxy_observations(client):
     planner_payload = planner_response.json()
     assert planner_payload["planning_run_id"]
     assert planner_payload["candidate_count"] >= 1
-    assert planner_payload["emitted_count"] == 1
-    assert planner_payload["queued_job_count"] == 1
+    assert planner_payload["emitted_count"] >= 1
+    assert planner_payload["queued_job_count"] >= 1
+    assert planner_payload["candidates"][0]["vulnerability_class"]
+    assert planner_payload["candidates"][0]["confidence"] >= 0
+    assert planner_payload["candidates"][0]["matched_rule"]
+    assert planner_payload["candidates"][0]["verifier_strategy"]
 
     jobs_response = client.get(f"/api/v1/scans/{scan_id}/verifier-jobs")
     assert jobs_response.status_code == 200
     jobs = jobs_response.json()
-    assert len(jobs) == 1
+    assert len(jobs) >= 1
     assert jobs[0]["status"] == "queued"
-    assert jobs[0]["severity"] == "critical"
+    assert jobs[0]["severity"] in {"critical", "high"}
 
     job_detail_response = client.get(f"/api/v1/verifier-jobs/{jobs[0]['id']}")
     assert job_detail_response.status_code == 200

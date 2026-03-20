@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from api.schemas.planner import VerifierStrategy, VulnerabilityClass
+
 
 class AiProviderKind(StrEnum):
     MOCK = "mock"
@@ -38,8 +40,13 @@ class AiPlanningCandidate(BaseModel):
     path_id: str
     title: str
     severity: str
+    vulnerability_class: VulnerabilityClass
+    confidence: int = Field(ge=0, le=100)
+    matched_rule: str
+    verifier_strategy: VerifierStrategy
     rationale: str
     step_count: int = Field(ge=2)
+    matched_signals: list[str] = Field(default_factory=list)
     workflow_node_ids: list[str] = Field(default_factory=list)
 
 
