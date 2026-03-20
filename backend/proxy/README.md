@@ -30,6 +30,8 @@ It observes target traffic and emits `proxy.http_observed` contracts into:
 
 That allows the backend to update workflow graphs directly from captured target traffic.
 
+The addon now also sends replayable request artifacts so the backend can persist bodies, headers, cookies, and response summaries separately from event payloads.
+
 ## Local usage
 
 Install `mitmproxy` as an external tool first.

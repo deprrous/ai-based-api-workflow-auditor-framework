@@ -45,21 +45,31 @@ def test_proxy_contract_event_updates_scan_workflow_consistently(client):
                     "x": 1140,
                     "y": 360,
                 },
-                    "edge": {
-                        "source": "members",
-                        "target": "captured-delete-project",
-                        "label": "captured destructive path",
-                        "style": "solid",
-                        "animated": True,
-                    },
+                "edge": {
+                    "source": "members",
+                    "target": "captured-delete-project",
+                    "label": "captured destructive path",
+                    "style": "solid",
+                    "animated": True,
+                },
+                "replay_artifact": {
+                    "request_headers": {"Content-Type": "application/json", "Cookie": "session=abc123"},
+                    "request_body_base64": "eyJkZWxldGUiOnRydWV9",
+                    "request_content_type": "application/json",
+                    "response_status_code": 204,
+                    "response_headers": {},
+                    "response_body_excerpt": "",
                 },
             },
+        },
     )
 
     assert response.status_code == 202
     envelope = response.json()
     assert envelope["graph"]["stats"]["node_count"] >= 9
     assert envelope["event"]["payload"]["request_fingerprint"] == "fp-delete-project"
+    artifact_id = envelope["event"]["payload"]["replay_artifact_id"]
+    assert artifact_id
 
     workflow_response = client.get("/api/v1/scans/partner-boundary-scan/workflow")
     assert workflow_response.status_code == 200
@@ -67,6 +77,15 @@ def test_proxy_contract_event_updates_scan_workflow_consistently(client):
     workflow = workflow_response.json()
     assert any(node["id"] == "captured-delete-project" for node in workflow["nodes"])
     assert any(edge["target"] == "captured-delete-project" for edge in workflow["edges"])
+
+    artifact_response = client.get(
+        f"/api/v1/replay-artifacts/{artifact_id}",
+        headers={"X-Auditor-Ingest-Token": "test-ingest-token"},
+    )
+    assert artifact_response.status_code == 200
+    artifact = artifact_response.json()
+    assert artifact["request_fingerprint"] == "fp-delete-project"
+    assert artifact["method"] == "DELETE"
 
 
 def test_verifier_contract_creates_confirmed_finding(client):

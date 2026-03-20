@@ -75,6 +75,25 @@ class ScanEventRecord(Base):
     scan: Mapped[ScanRunRecord] = relationship(back_populates="events")
 
 
+class ReplayArtifactRecord(Base):
+    __tablename__ = "replay_artifacts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    request_fingerprint: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    actor: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    host: Mapped[str] = mapped_column(String(120), nullable=False)
+    path: Mapped[str] = mapped_column(String(400), nullable=False)
+    request_headers_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    request_body_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_content_type: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    response_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_headers_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    response_body_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class FindingRecord(Base):
     __tablename__ = "findings"
 

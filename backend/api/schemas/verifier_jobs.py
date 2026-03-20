@@ -18,6 +18,7 @@ class VerifierJobStatus(StrEnum):
 
 
 class ReplayRequestSpec(BaseModel):
+    artifact_id: str | None = Field(default=None, max_length=64)
     request_fingerprint: str = Field(min_length=3, max_length=120)
     method: str = Field(min_length=2, max_length=16)
     host: str = Field(min_length=3, max_length=120)

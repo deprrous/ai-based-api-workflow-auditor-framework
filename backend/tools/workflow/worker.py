@@ -45,6 +45,7 @@ class WorkflowObservedStep(BaseModel):
     method: str | None = Field(default=None, max_length=16)
     actor: str | None = Field(default=None, max_length=120)
     request_fingerprint: str | None = Field(default=None, max_length=120)
+    replay_artifact_id: str | None = Field(default=None, max_length=64)
 
 
 class WorkflowPathFindingCandidate(BaseModel):
@@ -122,6 +123,7 @@ def build_path_edges(candidate: WorkflowPathFindingCandidate, nodes: list[Workfl
 def build_replay_plan(candidate: WorkflowPathFindingCandidate) -> ReplayPlan | None:
     replay_requests = [
         ReplayRequestSpec(
+            artifact_id=step.replay_artifact_id,
             request_fingerprint=step.request_fingerprint,
             method=step.method,
             host=step.host,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -7,6 +8,8 @@ import re
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping
 from urllib import error, parse, request
+
+from api.schemas.replay_artifacts import ReplayArtifactInput
 
 STATIC_EXTENSIONS = (
     ".css",
@@ -98,6 +101,46 @@ def _extract_headers(raw_headers: Any) -> dict[str, str]:
         return {str(key).lower(): str(value) for key, value in raw_headers.items()}
 
     return {}
+
+
+def _extract_body_bytes(value: Any) -> bytes | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    return None
+
+
+def _to_base64(value: bytes | None) -> str | None:
+    if value is None:
+        return None
+    return base64.b64encode(value).decode("ascii")
+
+
+def build_replay_artifact(request_obj: Any, response_obj: Any) -> ReplayArtifactInput:
+    request_headers = _extract_headers(getattr(request_obj, "headers", None))
+    response_headers = _extract_headers(getattr(response_obj, "headers", None)) if response_obj is not None else {}
+    request_body = _extract_body_bytes(getattr(request_obj, "raw_content", None) or getattr(request_obj, "content", None))
+    response_body = _extract_body_bytes(
+        getattr(response_obj, "raw_content", None) if response_obj is not None else None
+    )
+    response_excerpt = None
+    if response_body is not None:
+        try:
+            response_excerpt = response_body.decode("utf-8", errors="ignore")[:4000]
+        except Exception:  # pragma: no cover
+            response_excerpt = None
+
+    return ReplayArtifactInput(
+        request_headers=request_headers,
+        request_body_base64=_to_base64(request_body),
+        request_content_type=request_headers.get("content-type"),
+        response_status_code=getattr(response_obj, "status_code", None),
+        response_headers=response_headers,
+        response_body_excerpt=response_excerpt,
+    )
 
 
 def derive_actor(headers: Mapping[str, str], client_id: str | None) -> str:
@@ -231,6 +274,7 @@ def build_proxy_http_observed_event(
             "actor": actor,
             "node": node,
             "edge": edge,
+            "replay_artifact": build_replay_artifact(request_obj, response_obj).model_dump(mode="json"),
         },
     }
     return event, actor
@@ -302,12 +346,15 @@ def fake_flow(
     path: str,
     status_code: int | None,
     headers: Mapping[str, str] | None = None,
+    request_body: bytes | str | None = None,
+    response_headers: Mapping[str, str] | None = None,
+    response_body: bytes | str | None = None,
     client_ip: str = "127.0.0.1",
     client_port: int = 50000,
 ) -> Any:
     return SimpleNamespace(
         id=flow_id,
-        request=SimpleNamespace(method=method, host=host, path=path, headers=headers or {}),
-        response=SimpleNamespace(status_code=status_code),
+        request=SimpleNamespace(method=method, host=host, path=path, headers=headers or {}, raw_content=request_body, content=request_body),
+        response=SimpleNamespace(status_code=status_code, headers=response_headers or {}, raw_content=response_body),
         client_conn=SimpleNamespace(peername=(client_ip, client_port)),
     )

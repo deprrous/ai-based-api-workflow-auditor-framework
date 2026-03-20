@@ -20,7 +20,7 @@ def _post_proxy_event(client, scan_id: str, *, request_id: str, fingerprint: str
                 "path": path,
                 "status_code": 200 if method != "DELETE" else 204,
                 "actor": actor,
-                "node": {
+                    "node": {
                     "id": node_id,
                     "label": label,
                     "type": "endpoint",
@@ -28,11 +28,19 @@ def _post_proxy_event(client, scan_id: str, *, request_id: str, fingerprint: str
                     "detail": f"Observed {method} {path}",
                     "status": "high" if method == "DELETE" else "review",
                     "x": 600,
-                    "y": 180,
+                        "y": 180,
+                    },
+                    "replay_artifact": {
+                        "request_headers": {"Content-Type": "application/json"} if method in {"POST", "PUT", "PATCH", "DELETE"} else {},
+                        "request_body_base64": "eyJwbGFubmVyIjp0cnVlfQ==" if method in {"POST", "PUT", "PATCH", "DELETE"} else None,
+                        "request_content_type": "application/json" if method in {"POST", "PUT", "PATCH", "DELETE"} else None,
+                        "response_status_code": 200 if method != "DELETE" else 204,
+                        "response_headers": {},
+                        "response_body_excerpt": "ok",
+                    },
                 },
             },
-        },
-    )
+        )
     assert response.status_code == 202
 
 
@@ -94,6 +102,11 @@ def test_workflow_planner_derives_flagged_path_from_proxy_observations(client):
     assert len(jobs) == 1
     assert jobs[0]["status"] == "queued"
     assert jobs[0]["severity"] == "critical"
+
+    job_detail_response = client.get(f"/api/v1/verifier-jobs/{jobs[0]['id']}")
+    assert job_detail_response.status_code == 200
+    job_detail = job_detail_response.json()
+    assert all(request["artifact_id"] for request in job_detail["payload"]["replay_plan"]["requests"])
 
     events_response = client.get(f"/api/v1/scans/{scan_id}/events")
     assert events_response.status_code == 200

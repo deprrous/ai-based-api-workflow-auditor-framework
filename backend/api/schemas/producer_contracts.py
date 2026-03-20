@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from api.schemas.findings import FindingSeverity, FindingUpsert
+from api.schemas.replay_artifacts import ReplayArtifactInput
 from api.schemas.verifier_jobs import ReplayPlan
 from api.schemas.workflows import WorkflowEdge, WorkflowNode
 
@@ -20,6 +21,7 @@ class ProxyHttpObservedContract(BaseModel):
     actor: str | None = Field(default=None, max_length=120)
     node: WorkflowNode
     edge: WorkflowEdge | None = None
+    replay_artifact: ReplayArtifactInput | None = None
 
 
 class OrchestratorHypothesisCreatedContract(BaseModel):

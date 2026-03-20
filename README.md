@@ -101,6 +101,8 @@ AUDITOR_VERIFIER_REPLAY_BASE_URL=https://target.example.com
 AUDITOR_VERIFIER_REPLAY_ACTOR_HEADERS_JSON={"actor-id":{"Authorization":"Bearer token"}}
 ```
 
+Proxy-derived request artifacts are now persisted separately from scan events so replay executors can reuse stored request headers and bodies with higher fidelity.
+
 ```bash
 cd frontend
 npm install

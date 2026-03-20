@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass
 import hashlib
 from typing import Callable, Protocol
@@ -10,9 +11,11 @@ import httpx
 from api.app.config import Settings
 from api.schemas.events import EventSeverity, EventSource, RecordScanEventRequest
 from api.schemas.findings import FindingEvidence, FindingSeverity
-from api.schemas.verifier_jobs import ReplayPlan, ReplayRequestSpec
+from api.schemas.replay_artifacts import ReplayArtifactDetail
+from api.schemas.verifier_jobs import ReplayRequestSpec
 from api.schemas.verifier_jobs import ClaimVerifierJobRequest, CompleteVerifierJobRequest, FailVerifierJobRequest, VerifierJobDetail
 from api.services.event_service import event_service
+from api.services.replay_artifact_service import replay_artifact_service
 from api.services.verifier_job_service import verifier_job_service
 from tools.verifier.worker import VerifierReplayResult, build_ingest_request
 
@@ -116,6 +119,18 @@ def _request_url(base_url: str | None, request_spec: ReplayRequestSpec) -> str:
     return f"https://{request_spec.host}{request_spec.path}"
 
 
+def _decode_body(base64_value: str | None) -> bytes | None:
+    if not base64_value:
+        return None
+    return base64.b64decode(base64_value.encode("ascii"))
+
+
+def _merge_headers(base_headers: dict[str, str], override_headers: dict[str, str]) -> dict[str, str]:
+    merged = {key: value for key, value in base_headers.items() if key.lower() not in {"host", "content-length"}}
+    merged.update({key: value for key, value in override_headers.items() if key.lower() != "host"})
+    return merged
+
+
 def _default_http_transport(
     request_spec: ReplayRequestSpec,
     *,
@@ -123,12 +138,14 @@ def _default_http_transport(
     timeout_seconds: float,
     verify_tls: bool,
     headers: dict[str, str],
+    body: bytes | None,
 ) -> ReplayHttpResult:
     url = _request_url(base_url, request_spec)
     response = httpx.request(
         request_spec.method.upper(),
         url,
         headers=headers,
+        content=body,
         timeout=timeout_seconds,
         verify=verify_tls,
         follow_redirects=True,
@@ -149,6 +166,11 @@ class HttpReplayVerifierExecutor:
     verify_tls: bool = True
     transport: Callable[..., ReplayHttpResult] = _default_http_transport
 
+    def _artifact_for_request(self, request_spec: ReplayRequestSpec) -> ReplayArtifactDetail | None:
+        if request_spec.artifact_id is None:
+            return None
+        return replay_artifact_service.get_replay_artifact(request_spec.artifact_id)
+
     def execute(self, job: VerifierJobDetail) -> VerifierExecutionOutcome:
         replay_plan = job.payload.replay_plan
         if replay_plan is None or not replay_plan.requests:
@@ -161,13 +183,7 @@ class HttpReplayVerifierExecutor:
         actor_key = replay_plan.actor or (replay_plan.requests[-1].actor if replay_plan.requests else None)
         actor_headers = self.actor_headers.get(actor_key or "", {})
         response_results = [
-            self.transport(
-                request_spec,
-                base_url=self.base_url,
-                timeout_seconds=self.timeout_seconds,
-                verify_tls=self.verify_tls,
-                headers=actor_headers,
-            )
+            self._execute_request(request_spec, actor_headers)
             for request_spec in replay_plan.requests
         ]
         final_result = response_results[-1]
@@ -222,6 +238,20 @@ class HttpReplayVerifierExecutor:
             confirmed=True,
             replay_result=replay_result,
             note="HTTP replay executor confirmed the queued verifier job.",
+        )
+
+    def _execute_request(self, request_spec: ReplayRequestSpec, actor_headers: dict[str, str]) -> ReplayHttpResult:
+        artifact = self._artifact_for_request(request_spec)
+        base_headers = dict(artifact.request_headers) if artifact is not None else {}
+        merged_headers = _merge_headers(base_headers, actor_headers)
+        body = _decode_body(artifact.request_body_base64) if artifact is not None else None
+        return self.transport(
+            request_spec,
+            base_url=self.base_url,
+            timeout_seconds=self.timeout_seconds,
+            verify_tls=self.verify_tls,
+            headers=merged_headers,
+            body=body,
         )
 
 

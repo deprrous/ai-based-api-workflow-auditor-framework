@@ -28,6 +28,7 @@ def _sample_candidate() -> WorkflowPathFindingCandidate:
                 method="GET",
                 actor="partner-member",
                 request_fingerprint="fp-projects",
+                replay_artifact_id="artifact-projects",
             ),
             WorkflowObservedStep(
                 node_id="members",
@@ -39,6 +40,7 @@ def _sample_candidate() -> WorkflowPathFindingCandidate:
                 method="POST",
                 actor="partner-member",
                 request_fingerprint="fp-members",
+                replay_artifact_id="artifact-members",
             ),
             WorkflowObservedStep(
                 node_id="delete-project",
@@ -50,6 +52,7 @@ def _sample_candidate() -> WorkflowPathFindingCandidate:
                 method="DELETE",
                 actor="partner-member",
                 request_fingerprint="fp-delete",
+                replay_artifact_id="artifact-delete",
             ),
         ],
         actor="partner-member",
@@ -68,6 +71,7 @@ def test_workflow_mapper_builds_flagged_path_contract() -> None:
     assert len(contract.edges) == 3
     assert contract.replay_plan is not None
     assert len(contract.replay_plan.requests) == 3
+    assert contract.replay_plan.requests[1].artifact_id == "artifact-members"
     assert request.event_type == "workflow_mapper.path_flagged"
     assert request.source == "workflow_mapper"
 

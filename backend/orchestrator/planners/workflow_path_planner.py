@@ -46,6 +46,7 @@ class ProxyObservation:
     path: str
     host: str
     request_fingerprint: str
+    replay_artifact_id: str | None
     node_id: str
     label: str
     phase: str
@@ -85,6 +86,7 @@ def _observation_from_event(event: ScanEvent) -> ProxyObservation | None:
     path = str(payload.get("path") or "/")
     host = str(payload.get("host") or "")
     request_fingerprint = str(payload.get("request_fingerprint") or event.id)
+    replay_artifact_id = str(payload.get("replay_artifact_id")) if payload.get("replay_artifact_id") else None
 
     if not path or not host:
         return None
@@ -96,6 +98,7 @@ def _observation_from_event(event: ScanEvent) -> ProxyObservation | None:
         path=path,
         host=host,
         request_fingerprint=request_fingerprint,
+        replay_artifact_id=replay_artifact_id,
         node_id=f"event-node-{event.id}",
         label=f"{method} {path}",
         phase="action" if method in {"POST", "PUT", "PATCH", "DELETE"} else "read",
@@ -120,6 +123,7 @@ def _build_steps(observations: list[ProxyObservation]) -> list[WorkflowObservedS
             method=observation.method,
             actor=observation.actor,
             request_fingerprint=observation.request_fingerprint,
+            replay_artifact_id=observation.replay_artifact_id,
         )
         for observation in observations
     ]

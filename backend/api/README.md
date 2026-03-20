@@ -102,6 +102,8 @@ For a real backend replay executor, configure:
 
 The `http-replay` executor uses replay plans attached to queued verifier jobs and performs real HTTP requests against the configured target.
 
+Raw replayable request artifacts are stored separately from scan event payloads so workers can reproduce captured POST, PATCH, cookie, and header state more accurately.
+
 ## Producer contracts
 
 Runtime producers should publish against `GET /api/v1/contracts/runtime-ingest`.
@@ -145,6 +147,8 @@ The workflow planner can now consume persisted `proxy.http_observed` events and 
 - `GET /api/v1/contracts/runtime-ingest` - list supported runtime producer contracts.
 - `GET /api/v1/findings` - list findings with optional scan, severity, and status filters.
 - `GET /api/v1/findings/{finding_id}` - read detailed finding data and evidence.
+- `GET /api/v1/replay-artifacts/{artifact_id}` - read a persisted replay artifact for worker execution.
+- `GET /api/v1/replay-artifacts/scan/{scan_id}` - list persisted replay artifacts for a scan.
 - `GET /api/v1/verifier-jobs/{verifier_job_id}` - read queued verifier job detail.
 - `POST /api/v1/verifier-jobs/claim` - claim the next queued verifier job.
 - `POST /api/v1/verifier-jobs/{verifier_job_id}/complete` - mark a verifier job as completed.

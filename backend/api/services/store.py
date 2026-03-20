@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import cast
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from api.app.database import session_scope
-from api.app.db_models import FindingRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
+from api.app.db_models import FindingRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
 from api.repositories.event_repository import EventRepository
 from api.repositories.finding_repository import FindingRepository
+from api.repositories.replay_artifact_repository import ReplayArtifactRepository
 from api.repositories.scan_repository import ScanRepository
 from api.repositories.verifier_job_repository import VerifierJobRepository
 from api.repositories.verifier_run_repository import VerifierRunRepository
@@ -25,7 +27,8 @@ from api.schemas.events import (
     WorkflowGraphUpdate,
 )
 from api.schemas.findings import ContextReference, FindingDetail, FindingEvidence, FindingSeverity, FindingStatus, FindingSummary, FindingUpsert
-from api.schemas.producer_contracts import VerifierFindingConfirmedContract, WorkflowMapperPathFlaggedContract
+from api.schemas.producer_contracts import ProxyHttpObservedContract, VerifierFindingConfirmedContract, WorkflowMapperPathFlaggedContract
+from api.schemas.replay_artifacts import ReplayArtifactDetail
 from api.schemas.scans import ScanRisk, ScanRunSummary, ScanStatus, StartScanRequest
 from api.schemas.verifier_jobs import (
     ClaimVerifierJobRequest,
@@ -160,6 +163,25 @@ def _event_record_to_model(record: ScanEventRecord) -> ScanEvent:
     )
 
 
+def _replay_artifact_record_to_detail(record: ReplayArtifactRecord) -> ReplayArtifactDetail:
+    return ReplayArtifactDetail(
+        id=record.id,
+        scan_id=record.scan_id,
+        request_fingerprint=record.request_fingerprint,
+        actor=record.actor,
+        method=record.method,
+        host=record.host,
+        path=record.path,
+        request_headers=dict(record.request_headers_json),
+        request_body_base64=record.request_body_base64,
+        request_content_type=record.request_content_type,
+        response_status_code=record.response_status_code,
+        response_headers=dict(record.response_headers_json),
+        response_body_excerpt=record.response_body_excerpt,
+        created_at=record.created_at,
+    )
+
+
 def _finding_record_to_summary(record: FindingRecord) -> FindingSummary:
     evidence = [FindingEvidence.model_validate(item) for item in record.evidence_json]
     context_references = [ContextReference.model_validate(item) for item in record.context_references_json]
@@ -269,6 +291,40 @@ def _severity_priority(severity: str) -> int:
         FindingSeverity.REVIEW.value: 2,
     }
     return order.get(severity, 99)
+
+
+def _upsert_replay_artifact(
+    session: Session,
+    scan_id: str,
+    *,
+    request_fingerprint: str,
+    actor: str | None,
+    method: str,
+    host: str,
+    path: str,
+    artifact_input,
+    now: datetime,
+) -> ReplayArtifactRecord:
+    repository = ReplayArtifactRepository(session)
+    artifact_id = f"artifact-{uuid4().hex[:12]}"
+    record = ReplayArtifactRecord(
+        id=artifact_id,
+        scan_id=scan_id,
+        request_fingerprint=request_fingerprint,
+        actor=actor,
+        method=method,
+        host=host,
+        path=path,
+        request_headers_json=dict(artifact_input.request_headers),
+        request_body_base64=artifact_input.request_body_base64,
+        request_content_type=artifact_input.request_content_type,
+        response_status_code=artifact_input.response_status_code,
+        response_headers_json=dict(artifact_input.response_headers),
+        response_body_excerpt=artifact_input.response_body_excerpt,
+        created_at=now,
+    )
+    repository.add(record)
+    return record
 
 
 def _framework_nodes() -> list[WorkflowNode]:
@@ -1226,6 +1282,16 @@ class AuditStore:
             record = VerifierJobRepository(session).get(verifier_job_id)
             return _verifier_job_record_to_detail(record) if record else None
 
+    def get_replay_artifact(self, artifact_id: str) -> ReplayArtifactDetail | None:
+        with session_scope() as session:
+            record = ReplayArtifactRepository(session).get(artifact_id)
+            return _replay_artifact_record_to_detail(record) if record else None
+
+    def list_replay_artifacts(self, scan_id: str) -> list[ReplayArtifactDetail]:
+        with session_scope() as session:
+            records = ReplayArtifactRepository(session).list_for_scan(scan_id)
+            return [_replay_artifact_record_to_detail(record) for record in records]
+
     def claim_verifier_job(self, payload: ClaimVerifierJobRequest) -> VerifierJobDetail | None:
         with session_scope() as session:
             repository = VerifierJobRepository(session)
@@ -1397,6 +1463,7 @@ class AuditStore:
             scan_repository = ScanRepository(session)
             workflow_repository = WorkflowRepository(session)
             event_repository = EventRepository(session)
+            replay_artifact_repository = ReplayArtifactRepository(session)
 
             scan_record = scan_repository.get(scan_id)
             graph_record = workflow_repository.get_by_scan_id(scan_id)
@@ -1448,6 +1515,28 @@ class AuditStore:
             graph = _apply_graph_update(graph, payload.graph_update, scan_record.flagged_paths)
             _persist_graph(graph_record, graph)
 
+            event_payload = dict(payload.payload or {})
+            mapper_contract: WorkflowMapperPathFlaggedContract | None = None
+            if isinstance(payload.producer_contract, WorkflowMapperPathFlaggedContract):
+                mapper_contract = cast(WorkflowMapperPathFlaggedContract, payload.producer_contract)
+            if mapper_contract is not None and mapper_contract.replay_plan is not None:
+                event_payload.setdefault("path_id", mapper_contract.path_id)
+            proxy_contract = getattr(payload, "producer_contract", None)
+            if isinstance(proxy_contract, ProxyHttpObservedContract) and proxy_contract.replay_artifact is not None:
+                artifact_record = _upsert_replay_artifact(
+                    session,
+                    scan_id,
+                    request_fingerprint=proxy_contract.request_fingerprint,
+                    actor=proxy_contract.actor,
+                    method=proxy_contract.method,
+                    host=proxy_contract.host,
+                    path=proxy_contract.path,
+                    artifact_input=proxy_contract.replay_artifact,
+                    now=now,
+                )
+                session.flush()
+                event_payload["replay_artifact_id"] = artifact_record.id
+
             queued_job: VerifierJobRecord | None = None
             if isinstance(payload.producer_contract, WorkflowMapperPathFlaggedContract):
                 queued_job = _queue_verifier_job_from_path_contract(session, scan_id, payload.producer_contract, now=now)
@@ -1479,7 +1568,7 @@ class AuditStore:
                 payload.stage,
                 payload.severity,
                 payload.message,
-                payload.payload,
+                event_payload or None,
                 created_at=now,
             )
             event_repository.add(event_record)

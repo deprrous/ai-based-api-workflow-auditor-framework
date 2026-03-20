@@ -14,6 +14,90 @@ from api.services.verifier_runtime_service import (
 )
 
 
+def _create_scan_with_planned_job(client) -> str:
+    create_response = client.post(
+        "/api/v1/scans",
+        json={"name": "Replay Artifact Scan", "target": "qa", "notes": "replay-artifact-test"},
+    )
+    assert create_response.status_code == 202
+    scan_id = create_response.json()["run"]["id"]
+
+    def post_proxy_event(*, request_id: str, fingerprint: str, method: str, path: str, node_id: str, label: str, body: str | None = None):
+        response = client.post(
+            f"/api/v1/scans/{scan_id}/events",
+            headers={"X-Auditor-Ingest-Token": "test-ingest-token"},
+            json={
+                "source": "proxy",
+                "event_type": "proxy.http_observed",
+                "stage": "ingestion",
+                "severity": "info",
+                "message": f"Observed {method} {path}",
+                "producer_contract": {
+                    "kind": "proxy.http_observed",
+                    "request_id": request_id,
+                    "request_fingerprint": fingerprint,
+                    "method": method,
+                    "host": "qa.example.internal",
+                    "path": path,
+                    "status_code": 200,
+                    "actor": "partner-member",
+                    "node": {
+                        "id": node_id,
+                        "label": label,
+                        "type": "endpoint",
+                        "phase": "action" if method in {"POST", "PUT", "PATCH", "DELETE"} else "read",
+                        "detail": f"Observed {method} {path}",
+                        "status": "high" if method == "DELETE" else "review",
+                        "x": 640,
+                        "y": 180,
+                    },
+                    "replay_artifact": {
+                        "request_headers": {"Content-Type": "application/json"} if body is not None else {},
+                        "request_body_base64": "eyJ0ZXN0Ijp0cnVlfQ==" if body is not None else None,
+                        "request_content_type": "application/json" if body is not None else None,
+                        "response_status_code": 200,
+                        "response_headers": {},
+                        "response_body_excerpt": "ok",
+                    },
+                },
+            },
+        )
+        assert response.status_code == 202
+
+    post_proxy_event(
+        request_id="req-1",
+        fingerprint="fp-projects",
+        method="GET",
+        path="/v1/projects",
+        node_id="projects-list",
+        label="GET /v1/projects",
+    )
+    post_proxy_event(
+        request_id="req-2",
+        fingerprint="fp-members",
+        method="POST",
+        path="/v1/projects/123/members",
+        node_id="members-update",
+        label="POST /v1/projects/{projectId}/members",
+        body='{"test":true}',
+    )
+    post_proxy_event(
+        request_id="req-3",
+        fingerprint="fp-delete",
+        method="DELETE",
+        path="/v1/projects/123",
+        node_id="delete-project",
+        label="DELETE /v1/projects/{projectId}",
+    )
+
+    planner_response = client.post(
+        f"/api/v1/scans/{scan_id}/planner/run",
+        headers={"X-Auditor-Admin-Token": "test-admin-token"},
+    )
+    assert planner_response.status_code == 200
+    return scan_id
+
+
 def test_build_runtime_service_returns_none_when_disabled() -> None:
     settings = replace(
         get_settings(),
@@ -86,14 +170,19 @@ def test_runtime_service_returns_false_when_no_job_is_available(client) -> None:
 
 
 def test_http_replay_executor_confirms_job_with_replay_plan(client) -> None:
-    job = verifier_job_service.get_verifier_job("job-partner-member-keys")
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
 
-    def transport(request_spec, *, base_url, timeout_seconds, verify_tls, headers):
+    seen_requests: list[tuple[str, bytes | None]] = []
+
+    def transport(request_spec, *, base_url, timeout_seconds, verify_tls, headers, body):
         assert base_url == "https://qa.example.internal"
         assert timeout_seconds == 4.0
         assert verify_tls is True
-        assert headers == {"Authorization": "Bearer partner-token"}
+        assert headers["Authorization"] == "Bearer partner-token"
+        seen_requests.append((request_spec.method.upper(), body))
         status_code = 200
         return ReplayHttpResult(
             request=request_spec,
@@ -114,14 +203,17 @@ def test_http_replay_executor_confirms_job_with_replay_plan(client) -> None:
     assert outcome.confirmed is True
     assert outcome.replay_result is not None
     assert outcome.replay_result.response_status_code == 200
-    assert outcome.replay_result.request_fingerprint == "seed-keys-read"
+    assert outcome.replay_result.request_fingerprint in {"fp-delete", "fp-members", "fp-projects"}
+    assert any(method == "POST" and body is not None for method, body in seen_requests)
 
 
 def test_http_replay_executor_returns_unconfirmed_when_target_denies_access(client) -> None:
-    job = verifier_job_service.get_verifier_job("job-partner-member-keys")
+    scan_id = _create_scan_with_planned_job(client)
+    jobs = verifier_job_service.list_verifier_jobs(scan_id)
+    job = verifier_job_service.get_verifier_job(jobs[0].id)
     assert job is not None
 
-    def transport(request_spec, *, base_url, timeout_seconds, verify_tls, headers):
+    def transport(request_spec, *, base_url, timeout_seconds, verify_tls, headers, body):
         return ReplayHttpResult(
             request=request_spec,
             url=f"https://qa.example.internal{request_spec.path}",

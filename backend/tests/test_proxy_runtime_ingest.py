@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from proxy.capture.runtime_ingest import (
     RuntimeIngestEmitter,
     RuntimeIngestOptions,
@@ -32,13 +34,15 @@ def test_build_proxy_contract_contains_node_and_edge() -> None:
     )
 
     event, actor = build_proxy_http_observed_event(flow, options, previous_node_id="endpoint-previous")
+    contract = cast(dict[str, Any], event["producer_contract"])
 
     assert actor.startswith("bearer:")
     assert event["event_type"] == "proxy.http_observed"
-    assert event["producer_contract"]["node"]["type"] == "endpoint"
-    assert event["producer_contract"]["node"]["phase"] == "action"
-    assert event["producer_contract"]["edge"]["source"] == "endpoint-previous"
-    assert event["producer_contract"]["request_fingerprint"]
+    assert cast(dict[str, Any], contract["node"])["type"] == "endpoint"
+    assert cast(dict[str, Any], contract["node"])["phase"] == "action"
+    assert cast(dict[str, Any], contract["edge"])["source"] == "endpoint-previous"
+    assert contract["request_fingerprint"]
+    assert cast(dict[str, Any], contract["replay_artifact"])["request_headers"]["authorization"] == "Bearer secret-token"
 
 
 def test_emitter_posts_flow_and_tracks_actor_sequence() -> None:
@@ -72,13 +76,16 @@ def test_emitter_posts_flow_and_tracks_actor_sequence() -> None:
         path="/v1/projects/123",
         status_code=204,
         headers={"Cookie": "session=abc123"},
+        request_body=b'{"delete":true}',
     )
 
     assert emitter.process_flow(first_flow) is True
     assert emitter.process_flow(second_flow) is True
     assert len(sent_events) == 2
-    assert sent_events[0]["producer_contract"]["edge"] is None
-    assert sent_events[1]["producer_contract"]["edge"]["label"] == "observed target flow"
+    first_contract = cast(dict[str, Any], sent_events[0]["producer_contract"])
+    second_contract = cast(dict[str, Any], sent_events[1]["producer_contract"])
+    assert first_contract["edge"] is None
+    assert cast(dict[str, Any], second_contract["edge"])["label"] == "observed target flow"
 
 
 def test_capture_filters_skip_static_and_backend_paths() -> None:
