@@ -165,6 +165,7 @@ It can also enrich planned paths with matching ingested source-code and OpenAPI 
 - `GET /api/v1/scans/{scan_id}/verifier-runs` - list verifier runs linked to the scan.
 - `GET /api/v1/scans/{scan_id}/verifier-jobs` - list queued or completed verifier jobs for the scan.
 - `POST /api/v1/scans/{scan_id}/planner/run` - run the deterministic planner against persisted proxy observations.
+- `POST /api/v1/scans/{scan_id}/planner/run-ai` - run the AI-assisted planner on deterministic candidates.
 - `POST /api/v1/scans/{scan_id}/events` - ingest proxy, orchestrator, mapper, or verifier runtime output.
 - `GET /api/v1/scans/{scan_id}/workflow` - read the persisted graph for that scan run.
 - `POST /api/v1/scans` - queue a new scan run and seed its workflow graph.

@@ -107,6 +107,8 @@ Those replay artifacts now also have built-in retention and redaction controls s
 
 The backend also now supports persisted source-code and OpenAPI artifact ingestion plus a provider-neutral AI catalog foundation.
 
+It also now supports AI-assisted planning on top of deterministic candidates, with a no-key `mock` provider for local backend testing and an `openai-compatible` path for future real model integration.
+
 ```bash
 cd frontend
 npm install

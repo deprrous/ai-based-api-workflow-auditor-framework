@@ -87,6 +87,11 @@ class Settings:
     replay_artifact_retention_poll_interval: float
     replay_artifact_redact_headers: tuple[str, ...]
     replay_artifact_redact_body_keys: tuple[str, ...]
+    ai_default_provider: str
+    ai_openai_compatible_base_url: str | None
+    ai_openai_compatible_api_key: str | None
+    ai_openai_compatible_model: str | None
+    ai_openai_compatible_verify_tls: bool
 
 
 @lru_cache
@@ -147,5 +152,13 @@ def get_settings() -> Settings:
                 "session",
                 "jwt",
             ),
+        ),
+        ai_default_provider=os.getenv("AUDITOR_AI_DEFAULT_PROVIDER", "mock"),
+        ai_openai_compatible_base_url=os.getenv("AUDITOR_AI_OPENAI_COMPATIBLE_BASE_URL") or None,
+        ai_openai_compatible_api_key=os.getenv("AUDITOR_AI_OPENAI_COMPATIBLE_API_KEY") or None,
+        ai_openai_compatible_model=os.getenv("AUDITOR_AI_OPENAI_COMPATIBLE_MODEL") or None,
+        ai_openai_compatible_verify_tls=_read_bool(
+            os.getenv("AUDITOR_AI_OPENAI_COMPATIBLE_VERIFY_TLS"),
+            default=True,
         ),
     )

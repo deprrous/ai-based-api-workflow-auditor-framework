@@ -25,3 +25,9 @@ The orchestrator should output structured hypotheses and actions, not hide every
 This is the first step toward an automated scan pipeline where target observations feed planner output, then verifier jobs, then confirmed findings.
 
 The next orchestration layer now also includes a provider-neutral AI catalog under `orchestrator/providers/` so future reasoning can target multiple hosted or local model backends without coupling business logic to one vendor.
+
+The backend now also supports an AI-assisted planner mode that can rank deterministic candidates through a provider-neutral interface.
+
+- `mock` provider works without API keys for local validation
+- `openai-compatible` provider is scaffolded for real hosted or local gateways
+- verifier replay remains the source of truth even when AI assists planning
