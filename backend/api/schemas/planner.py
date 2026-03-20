@@ -14,6 +14,7 @@ class PlannerCandidateSummary(BaseModel):
 
 
 class PlannerRunResponse(BaseModel):
+    planning_run_id: str
     scan_id: str
     candidate_count: int
     emitted_count: int

@@ -61,6 +61,7 @@ class AiPlanningRunRequest(BaseModel):
 
 
 class AiPlanningRunResponse(BaseModel):
+    planning_run_id: str
     scan_id: str
     provider_key: str
     candidate_count: int

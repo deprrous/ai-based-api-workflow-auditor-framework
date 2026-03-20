@@ -20,12 +20,16 @@ Architecture-first repository for an agentic AI API auditing framework focused o
 - `GET /api/v1/scans/{scan_id}/verifier-runs`
 - `GET /api/v1/scans/{scan_id}/verifier-jobs`
 - `POST /api/v1/scans/{scan_id}/planner/run`
+- `POST /api/v1/scans/{scan_id}/planner/run-ai`
+- `GET /api/v1/scans/{scan_id}/planner/history`
 - `POST /api/v1/scans/{scan_id}/events`
 - `GET /api/v1/scans/{scan_id}/workflow`
 - `POST /api/v1/scans`
 - `GET /api/v1/contracts/runtime-ingest`
 - `GET /api/v1/findings`
 - `GET /api/v1/findings/{finding_id}`
+- `GET /api/v1/ai/providers/catalog`
+- `GET /api/v1/scans/planner/runs/{planning_run_id}`
 - `GET /api/v1/verifier-jobs/{verifier_job_id}`
 - `POST /api/v1/verifier-jobs/claim`
 - `GET /api/v1/verifier-runs/{verifier_run_id}`

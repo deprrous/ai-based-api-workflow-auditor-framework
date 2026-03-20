@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from api.schemas.ai import AiPlanningCandidate, AiPlanningProposal, AiPlanningRunRequest, AiPlanningRunResponse
 from api.schemas.events import EventSeverity, RecordScanEventRequest
 from api.schemas.planner import PlannerCandidateSummary, PlannerRunResponse
+from api.schemas.planning_runs import PlanningMode, PlanningRunDetail, PlanningRunSummary
 from api.services.ai_provider_service import ai_provider_service
 from api.services.artifact_service import artifact_service
 from api.services.event_service import event_service
 from api.services.scan_service import scan_service
+from api.services.store import audit_store
 from api.services.verifier_job_service import verifier_job_service
 from orchestrator.planners.workflow_path_planner import build_candidates_from_proxy_events
 from tools.workflow.worker import WorkflowPathFindingCandidate, build_ingest_request
@@ -82,6 +84,12 @@ class PlannerService:
             for candidate in candidates
         ]
 
+    def list_planning_runs(self, scan_id: str) -> list[PlanningRunSummary]:
+        return audit_store.list_planning_runs(scan_id)
+
+    def get_planning_run(self, planning_run_id: str) -> PlanningRunDetail | None:
+        return audit_store.get_planning_run(planning_run_id)
+
     def run_workflow_planner(self, scan_id: str) -> PlannerRunResponse | None:
         prepared = self._prepare_candidates(scan_id)
         if prepared is None:
@@ -94,6 +102,7 @@ class PlannerService:
             existing_path_ids=set(prepared.existing_path_ids),
         )
         queued_job_count_after = len(verifier_job_service.list_verifier_jobs(scan_id))
+        candidate_summaries = self._candidate_summaries(prepared.candidates)
         event_service.record_scan_event(
             scan_id,
             RecordScanEventRequest(
@@ -110,13 +119,30 @@ class PlannerService:
             ),
         )
 
+        planning_run = audit_store.create_planning_run(
+            scan_id=scan_id,
+            mode=PlanningMode.DETERMINISTIC,
+            provider_key="deterministic",
+            apply=True,
+            candidate_count=len(prepared.candidates),
+            suggested_count=len(prepared.candidates),
+            emitted_count=emitted_count,
+            skipped_existing_count=skipped_existing_count,
+            queued_job_count=max(0, queued_job_count_after - queued_job_count_before),
+            request_payload={"mode": "deterministic", "apply": True},
+            candidates=candidate_summaries,
+            proposals=[],
+        )
+        planning_run_id = planning_run.id if planning_run is not None else f"deterministic-{scan_id}"
+
         return PlannerRunResponse(
+            planning_run_id=planning_run_id,
             scan_id=scan_id,
             candidate_count=len(prepared.candidates),
             emitted_count=emitted_count,
             skipped_existing_count=skipped_existing_count,
             queued_job_count=max(0, queued_job_count_after - queued_job_count_before),
-            candidates=self._candidate_summaries(prepared.candidates),
+            candidates=candidate_summaries,
         )
 
     def run_ai_workflow_planner(self, scan_id: str, payload: AiPlanningRunRequest) -> AiPlanningRunResponse | None:
@@ -184,7 +210,24 @@ class PlannerService:
             ),
         )
 
+        planning_run = audit_store.create_planning_run(
+            scan_id=scan_id,
+            mode=PlanningMode.AI_ASSISTED,
+            provider_key=provider_key,
+            apply=payload.apply,
+            candidate_count=len(ai_candidates),
+            suggested_count=len(selected_candidates),
+            emitted_count=emitted_count,
+            skipped_existing_count=skipped_existing_count,
+            queued_job_count=max(0, queued_job_count_after - queued_job_count_before),
+            request_payload=payload.model_dump(mode="json"),
+            candidates=self._candidate_summaries(limited_candidates),
+            proposals=proposals,
+        )
+        planning_run_id = planning_run.id if planning_run is not None else f"ai-{scan_id}"
+
         return AiPlanningRunResponse(
+            planning_run_id=planning_run_id,
             scan_id=scan_id,
             provider_key=provider_key,
             candidate_count=len(ai_candidates),

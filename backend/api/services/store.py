@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 
 from api.app.config import get_settings
 from api.app.database import session_scope
-from api.app.db_models import FindingRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
+from api.app.db_models import FindingRecord, PlanningRunRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
 from api.repositories.event_repository import EventRepository
 from api.repositories.finding_repository import FindingRepository
+from api.repositories.planning_run_repository import PlanningRunRepository
 from api.repositories.replay_artifact_repository import ReplayArtifactRepository
 from api.repositories.scan_repository import ScanRepository
 from api.repositories.verifier_job_repository import VerifierJobRepository
@@ -28,7 +29,10 @@ from api.schemas.events import (
     WorkflowGraphUpdate,
 )
 from api.schemas.findings import ContextReference, FindingDetail, FindingEvidence, FindingSeverity, FindingStatus, FindingSummary, FindingUpsert
+from api.schemas.ai import AiPlanningProposal
 from api.schemas.producer_contracts import ProxyHttpObservedContract, VerifierFindingConfirmedContract, WorkflowMapperPathFlaggedContract
+from api.schemas.planner import PlannerCandidateSummary
+from api.schemas.planning_runs import PlanningMode, PlanningRunDetail, PlanningRunSummary
 from api.schemas.replay_artifacts import ReplayArtifactDetail, ReplayArtifactMaterial
 from api.services.replay_artifact_policy import redact_headers, redact_response_excerpt
 from api.schemas.scans import ScanRisk, ScanRunSummary, ScanStatus, StartScanRequest
@@ -287,6 +291,35 @@ def _verifier_job_record_to_detail(record: VerifierJobRecord) -> VerifierJobDeta
     summary = _verifier_job_record_to_summary(record)
     payload = VerifierJobPayload.model_validate(record.payload_json)
     return VerifierJobDetail(**summary.model_dump(), rationale=record.rationale, payload=payload)
+
+
+def _planning_run_record_to_summary(record: PlanningRunRecord) -> PlanningRunSummary:
+    return PlanningRunSummary(
+        id=record.id,
+        scan_id=record.scan_id,
+        mode=PlanningMode(record.mode),
+        provider_key=record.provider_key,
+        apply=record.apply,
+        candidate_count=record.candidate_count,
+        suggested_count=record.suggested_count,
+        emitted_count=record.emitted_count,
+        skipped_existing_count=record.skipped_existing_count,
+        queued_job_count=record.queued_job_count,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _planning_run_record_to_detail(record: PlanningRunRecord) -> PlanningRunDetail:
+    summary = _planning_run_record_to_summary(record)
+    candidates = [PlannerCandidateSummary.model_validate(item) for item in record.candidates_json]
+    proposals = [AiPlanningProposal.model_validate(item) for item in record.proposals_json]
+    return PlanningRunDetail(
+        **summary.model_dump(),
+        request=dict(record.request_json),
+        candidates=candidates,
+        proposals=proposals,
+    )
 
 
 def _severity_priority(severity: str) -> int:
@@ -1322,6 +1355,59 @@ class AuditStore:
                 )
                 record.purged_at = effective_now
             return len(records)
+
+    def create_planning_run(
+        self,
+        *,
+        scan_id: str,
+        mode: PlanningMode,
+        provider_key: str,
+        apply: bool,
+        candidate_count: int,
+        suggested_count: int,
+        emitted_count: int,
+        skipped_existing_count: int,
+        queued_job_count: int,
+        request_payload: dict[str, object],
+        candidates: list[PlannerCandidateSummary],
+        proposals: list[AiPlanningProposal],
+    ) -> PlanningRunDetail | None:
+        with session_scope() as session:
+            if ScanRepository(session).get(scan_id) is None:
+                return None
+
+            now = _utc_now()
+            record = PlanningRunRecord(
+                id=f"plan-{uuid4().hex[:12]}",
+                scan_id=scan_id,
+                mode=mode.value,
+                provider_key=provider_key,
+                apply=apply,
+                candidate_count=candidate_count,
+                suggested_count=suggested_count,
+                emitted_count=emitted_count,
+                skipped_existing_count=skipped_existing_count,
+                queued_job_count=queued_job_count,
+                request_json=request_payload,
+                candidates_json=[candidate.model_dump(mode="json") for candidate in candidates],
+                proposals_json=[proposal.model_dump(mode="json") for proposal in proposals],
+                created_at=now,
+                updated_at=now,
+            )
+            PlanningRunRepository(session).add(record)
+            session.flush()
+            session.refresh(record)
+            return _planning_run_record_to_detail(record)
+
+    def list_planning_runs(self, scan_id: str) -> list[PlanningRunSummary]:
+        with session_scope() as session:
+            records = PlanningRunRepository(session).list_for_scan(scan_id)
+            return [_planning_run_record_to_summary(record) for record in records]
+
+    def get_planning_run(self, planning_run_id: str) -> PlanningRunDetail | None:
+        with session_scope() as session:
+            record = PlanningRunRepository(session).get(planning_run_id)
+            return _planning_run_record_to_detail(record) if record else None
 
     def claim_verifier_job(self, payload: ClaimVerifierJobRequest) -> VerifierJobDetail | None:
         with session_scope() as session:

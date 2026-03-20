@@ -88,6 +88,7 @@ def test_ai_planner_mock_provider_can_preview_candidates_without_emitting(client
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["planning_run_id"]
     assert payload["provider_key"] == "mock"
     assert payload["candidate_count"] >= 1
     assert payload["suggested_count"] >= 1
@@ -112,6 +113,7 @@ def test_ai_planner_mock_provider_can_emit_flagged_paths_and_jobs(client):
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["planning_run_id"]
     assert payload["provider_key"] == "mock"
     assert payload["suggested_count"] >= 1
     assert payload["emitted_count"] >= 1
@@ -124,6 +126,24 @@ def test_ai_planner_mock_provider_can_emit_flagged_paths_and_jobs(client):
     assert events_response.status_code == 200
     event_types = {event["event_type"] for event in events_response.json()}
     assert "orchestrator.ai_planner.completed" in event_types
+
+    history_response = client.get(
+        f"/api/v1/scans/{scan_id}/planner/history",
+        headers={"X-Auditor-Admin-Token": "test-admin-token"},
+    )
+    assert history_response.status_code == 200
+    history = history_response.json()
+    assert len(history) >= 1
+    assert history[0]["mode"] == "ai_assisted"
+
+    detail_response = client.get(
+        f"/api/v1/scans/planner/runs/{payload['planning_run_id']}",
+        headers={"X-Auditor-Admin-Token": "test-admin-token"},
+    )
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["provider_key"] == "mock"
+    assert len(detail["proposals"]) >= 1
 
 
 def test_ai_provider_catalog_includes_mock_provider(client):

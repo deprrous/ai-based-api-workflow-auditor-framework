@@ -188,6 +188,26 @@ class VerifierJobRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class PlanningRunRecord(Base):
+    __tablename__ = "planning_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    provider_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    apply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    suggested_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    emitted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_existing_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    queued_job_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    request_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    candidates_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    proposals_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ServiceAccountRecord(Base):
     __tablename__ = "service_accounts"
 

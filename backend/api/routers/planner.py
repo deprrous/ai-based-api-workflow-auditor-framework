@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from api.app.security import require_admin_token
 from api.schemas.ai import AiPlanningRunRequest, AiPlanningRunResponse
 from api.schemas.planner import PlannerRunResponse
+from api.schemas.planning_runs import PlanningRunDetail, PlanningRunSummary
+from api.services.scan_service import scan_service
 from api.services.planner_service import planner_service
 
 router = APIRouter(prefix="/scans", tags=["planner"])
@@ -30,3 +32,21 @@ async def run_ai_workflow_planner(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan run not found.")
 
     return result
+
+
+@router.get("/{scan_id}/planner/history", response_model=list[PlanningRunSummary], summary="List planner runs for a scan")
+async def list_planning_runs(scan_id: str, _: None = Depends(require_admin_token)) -> list[PlanningRunSummary]:
+    scan = scan_service.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan run not found.")
+
+    return planner_service.list_planning_runs(scan_id)
+
+
+@router.get("/planner/runs/{planning_run_id}", response_model=PlanningRunDetail, summary="Read planner run detail")
+async def get_planning_run(planning_run_id: str, _: None = Depends(require_admin_token)) -> PlanningRunDetail:
+    planning_run = planner_service.get_planning_run(planning_run_id)
+    if planning_run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planner run not found.")
+
+    return planning_run

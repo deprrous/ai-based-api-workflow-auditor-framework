@@ -92,6 +92,7 @@ def test_workflow_planner_derives_flagged_path_from_proxy_observations(client):
     )
     assert planner_response.status_code == 200
     planner_payload = planner_response.json()
+    assert planner_payload["planning_run_id"]
     assert planner_payload["candidate_count"] >= 1
     assert planner_payload["emitted_count"] == 1
     assert planner_payload["queued_job_count"] == 1
@@ -113,6 +114,25 @@ def test_workflow_planner_derives_flagged_path_from_proxy_observations(client):
     events = events_response.json()
     assert any(event["event_type"] == "workflow_mapper.path_flagged" for event in events)
     assert any(event["event_type"] == "orchestrator.workflow_planner.completed" for event in events)
+
+    history_response = client.get(
+        f"/api/v1/scans/{scan_id}/planner/history",
+        headers={"X-Auditor-Admin-Token": "test-admin-token"},
+    )
+    assert history_response.status_code == 200
+    history = history_response.json()
+    assert len(history) >= 1
+    assert history[0]["mode"] == "deterministic"
+
+    detail_response = client.get(
+        f"/api/v1/scans/planner/runs/{planner_payload['planning_run_id']}",
+        headers={"X-Auditor-Admin-Token": "test-admin-token"},
+    )
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["provider_key"] == "deterministic"
+    assert len(detail["candidates"]) >= 1
+    assert detail["proposals"] == []
 
     rerun_response = client.post(
         f"/api/v1/scans/{scan_id}/planner/run",
