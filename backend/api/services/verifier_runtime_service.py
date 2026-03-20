@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from typing import Callable, Protocol
+from urllib import parse
 
 import httpx
 
@@ -197,6 +198,16 @@ def _set_json_path(document: dict[str, object], dotted_path: str, value: object)
     current[segments[-1]] = value
 
 
+def _set_query_param(path: str, query_param: str, value: object) -> str:
+    split = parse.urlsplit(path)
+    params = parse.parse_qs(split.query, keep_blank_values=True)
+    params[query_param] = [str(value)]
+    updated_query = parse.urlencode(params, doseq=True)
+    return parse.urlunsplit((split.scheme, split.netloc, split.path, updated_query, split.fragment)) if split.scheme else (
+        f"{split.path}?{updated_query}" if updated_query else split.path
+    )
+
+
 def _apply_mutations(
     request_spec: ReplayRequestSpec,
     *,
@@ -217,6 +228,8 @@ def _apply_mutations(
 
         if mutation.type == ReplayMutationType.PATH_REPLACE and mutation.from_value and mutation.to_value:
             updated_path = updated_path.replace(mutation.from_value, mutation.to_value)
+        elif mutation.type == ReplayMutationType.QUERY_SET and mutation.query_param:
+            updated_path = _set_query_param(updated_path, mutation.query_param, mutation.value)
         elif mutation.type == ReplayMutationType.HEADER_SET and mutation.header_name:
             updated_headers[mutation.header_name] = str(mutation.value if mutation.value is not None else mutation.to_value or "")
         elif mutation.type == ReplayMutationType.ACTOR_SWITCH and mutation.actor:

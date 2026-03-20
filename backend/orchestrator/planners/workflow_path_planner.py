@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from urllib import parse
+
+from api.schemas.artifacts import ArtifactRiskIndicatorSummary
 from api.schemas.events import ScanEvent
 from orchestrator.planners.vulnerability_rules import CoverageObservation, evaluate_rule_packs
 from tools.workflow.worker import WorkflowObservedStep, WorkflowPathFindingCandidate
 
 
-def _observation_from_event(event: ScanEvent) -> CoverageObservation | None:
+def _observation_from_event(
+    event: ScanEvent,
+    *,
+    route_risk_lookup: dict[tuple[str, str], list[ArtifactRiskIndicatorSummary]] | None = None,
+) -> CoverageObservation | None:
     if event.event_type != "proxy.http_observed" or event.payload is None:
         return None
 
@@ -16,6 +23,10 @@ def _observation_from_event(event: ScanEvent) -> CoverageObservation | None:
     host = str(payload.get("host") or "")
     request_fingerprint = str(payload.get("request_fingerprint") or event.id)
     replay_artifact_id = str(payload.get("replay_artifact_id")) if payload.get("replay_artifact_id") else None
+    route_indicators = []
+    if route_risk_lookup is not None:
+        stripped_path = parse.urlsplit(path).path or path
+        route_indicators = route_risk_lookup.get((method.upper(), path), []) or route_risk_lookup.get((method.upper(), stripped_path), [])
 
     if not path or not host:
         return None
@@ -32,6 +43,8 @@ def _observation_from_event(event: ScanEvent) -> CoverageObservation | None:
         label=f"{method} {path}",
         phase="action" if method in {"POST", "PUT", "PATCH", "DELETE"} else "read",
         detail=f"Observed {method} {path} on {host} from actor {actor}.",
+        artifact_risk_categories=tuple(indicator.category for indicator in route_indicators),
+        artifact_signal_labels=tuple(indicator.summary for indicator in route_indicators),
     )
 
 
@@ -60,8 +73,17 @@ def _build_steps(observations: list[CoverageObservation]) -> list[WorkflowObserv
     ]
 
 
-def build_candidates_from_proxy_events(scan_id: str, events: list[ScanEvent]) -> list[WorkflowPathFindingCandidate]:
-    observations = [observation for event in events if (observation := _observation_from_event(event)) is not None]
+def build_candidates_from_proxy_events(
+    scan_id: str,
+    events: list[ScanEvent],
+    *,
+    route_risk_lookup: dict[tuple[str, str], list[ArtifactRiskIndicatorSummary]] | None = None,
+) -> list[WorkflowPathFindingCandidate]:
+    observations = [
+        observation
+        for event in events
+        if (observation := _observation_from_event(event, route_risk_lookup=route_risk_lookup)) is not None
+    ]
     by_actor: dict[str, list[CoverageObservation]] = {}
     for observation in observations:
         by_actor.setdefault(observation.actor, []).append(observation)

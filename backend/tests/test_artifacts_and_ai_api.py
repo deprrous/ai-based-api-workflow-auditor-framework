@@ -15,13 +15,20 @@ def test_source_and_api_spec_artifact_ingestion(client):
             "name": "project_routes.py",
             "path": "services/project_routes.py",
             "language": "python",
-            "content": '@router.delete("/v1/projects/{projectId}")\ndef delete_project():\n    pass\n',
+            "content": '@router.delete("/v1/projects/{projectId}")\ndef delete_project(user_input_url, query):\n    cursor.execute(f"SELECT * FROM projects WHERE id = {query}")\n    requests.get(user_input_url)\n    return dangerouslySetInnerHTML\n',
         },
     )
     assert source_response.status_code == 201
     source_artifact = source_response.json()
     assert source_artifact["kind"] == "source_code"
     assert source_artifact["route_count"] == 1
+    assert source_artifact["risk_indicator_count"] >= 2
+
+    source_detail_response = client.get(f"/api/v1/artifacts/{source_artifact['id']}")
+    assert source_detail_response.status_code == 200
+    source_detail = source_detail_response.json()
+    categories = {indicator["category"] for indicator in source_detail["risk_indicators"]}
+    assert {"sqli", "ssrf", "reflected_xss"}.issubset(categories)
 
     spec_response = client.post(
         f"/api/v1/artifacts/scan/{scan_id}/api-spec",
@@ -58,6 +65,7 @@ components:
     detail = detail_response.json()
     assert detail["parsed_summary"]["route_count"] == 1
     assert detail["parsed_summary"]["auth_schemes"] == ["bearerAuth"]
+    assert detail["risk_indicator_count"] >= 0
 
 
 def test_planner_uses_artifact_context_to_enrich_rationale(client):

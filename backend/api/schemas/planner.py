@@ -14,6 +14,10 @@ class VulnerabilityClass(StrEnum):
     MASS_ASSIGNMENT = "mass_assignment"
     EXCESSIVE_DATA_EXPOSURE = "excessive_data_exposure"
     UNSAFE_DESTRUCTIVE_ACTION = "unsafe_destructive_action"
+    SQLI = "sqli"
+    SSRF = "ssrf"
+    STORED_XSS = "stored_xss"
+    REFLECTED_XSS = "reflected_xss"
 
 
 class VerifierStrategy(StrEnum):
@@ -23,6 +27,10 @@ class VerifierStrategy(StrEnum):
     BODY_MUTATION_REPLAY = "body_mutation_replay"
     SENSITIVE_READ_REPLAY = "sensitive_read_replay"
     DESTRUCTIVE_ACTION_REPLAY = "destructive_action_replay"
+    SQLI_REPLAY = "sqli_replay"
+    SSRF_REPLAY = "ssrf_replay"
+    STORED_XSS_REPLAY = "stored_xss_replay"
+    REFLECTED_XSS_REPLAY = "reflected_xss_replay"
 
 
 class PlannerCandidateSummary(BaseModel):

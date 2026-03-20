@@ -121,6 +121,9 @@ The deterministic backend planner now has explicit vulnerability coverage rules 
 - mass assignment
 - excessive data exposure
 - unsafe destructive actions
+- SQL injection candidates
+- SSRF candidates
+- stored/reflected XSS candidates
 
 ```bash
 cd frontend

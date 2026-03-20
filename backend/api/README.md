@@ -163,6 +163,10 @@ Current explicit coverage classes in the backend planner:
 - `mass_assignment`
 - `excessive_data_exposure`
 - `unsafe_destructive_action`
+- `sqli`
+- `ssrf`
+- `stored_xss`
+- `reflected_xss`
 
 Planner outputs now carry:
 

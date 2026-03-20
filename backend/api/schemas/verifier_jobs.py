@@ -30,6 +30,7 @@ class ReplayRequestSpec(BaseModel):
 
 class ReplayMutationType(StrEnum):
     PATH_REPLACE = "path_replace"
+    QUERY_SET = "query_set"
     BODY_JSON_SET = "body_json_set"
     HEADER_SET = "header_set"
     ACTOR_SWITCH = "actor_switch"
@@ -42,6 +43,7 @@ class ReplayMutationSpec(BaseModel):
     to_value: str | None = Field(default=None, max_length=200)
     body_field: str | None = Field(default=None, max_length=120)
     header_name: str | None = Field(default=None, max_length=120)
+    query_param: str | None = Field(default=None, max_length=120)
     actor: str | None = Field(default=None, max_length=120)
     value: Any | None = None
 

@@ -29,7 +29,8 @@ class PlannerService:
             return None
 
         events = event_service.list_scan_events(scan_id, limit=1000)
-        candidates = build_candidates_from_proxy_events(scan_id, events)
+        route_risk_lookup = artifact_service.route_risk_lookup(scan_id)
+        candidates = build_candidates_from_proxy_events(scan_id, events, route_risk_lookup=route_risk_lookup)
         for candidate in candidates:
             final_step = candidate.steps[-1]
             if final_step.method is None or final_step.path is None:

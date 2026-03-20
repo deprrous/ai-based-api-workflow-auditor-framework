@@ -11,6 +11,23 @@ class ArtifactKind(StrEnum):
     API_SPEC = "api_spec"
 
 
+class ArtifactRiskCategory(StrEnum):
+    SQLI = "sqli"
+    SSRF = "ssrf"
+    STORED_XSS = "stored_xss"
+    REFLECTED_XSS = "reflected_xss"
+
+
+class ArtifactRiskIndicatorSummary(BaseModel):
+    category: ArtifactRiskCategory
+    summary: str
+    location: str
+    confidence: int = Field(ge=0, le=100)
+    route_method: str | None = Field(default=None, max_length=16)
+    route_path: str | None = Field(default=None, max_length=400)
+    tags: list[str] = Field(default_factory=list)
+
+
 class ArtifactRouteSummary(BaseModel):
     method: str = Field(min_length=2, max_length=16)
     path: str = Field(min_length=1, max_length=400)
@@ -28,6 +45,7 @@ class ArtifactSummary(BaseModel):
     checksum: str
     route_count: int
     auth_scheme_count: int
+    risk_indicator_count: int
     created_at: datetime
     updated_at: datetime
 
@@ -35,6 +53,7 @@ class ArtifactSummary(BaseModel):
 class ArtifactDetail(ArtifactSummary):
     content_excerpt: str
     parsed_summary: dict[str, object]
+    risk_indicators: list[ArtifactRiskIndicatorSummary]
 
 
 class SourceArtifactIngestRequest(BaseModel):
@@ -57,3 +76,4 @@ class ArtifactMatchReference(BaseModel):
     artifact_name: str
     route: ArtifactRouteSummary | None = None
     rationale: str
+    risk_indicators: list[ArtifactRiskIndicatorSummary] = Field(default_factory=list)
