@@ -2,12 +2,21 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from typing import cast
 from uuid import uuid4
 
 from api.app.database import session_scope
 from api.app.db_models import OrchestrationSessionRecord, OrchestrationStepRecord
 from api.repositories.orchestration_repository import OrchestrationRepository
-from api.schemas.ai import AiNextAction, AiNextActionRequest, AiOrchestrationMemory, AiPlanningRunRequest
+from api.schemas.ai import (
+    AiHypothesisCandidate,
+    AiHypothesisSelectionRequest,
+    AiNextAction,
+    AiNextActionRequest,
+    AiOrchestrationMemory,
+    AiPlanningRunRequest,
+)
+from api.schemas.hypotheses import HypothesisStatus
 from api.schemas.orchestration import (
     OrchestrationMode,
     OrchestrationSessionDetail,
@@ -21,6 +30,7 @@ from api.schemas.orchestration import (
 from api.services.ai_provider_service import ai_provider_service
 from api.services.event_service import event_service
 from api.services.finding_service import finding_service
+from api.services.hypothesis_service import hypothesis_service
 from api.services.planner_service import planner_service
 from api.services.scan_service import scan_service
 from api.services.verifier_job_service import verifier_job_service
@@ -196,31 +206,35 @@ class OrchestrationService:
         refreshed["finding_count"] = len(finding_service.list_findings(scan_id=scan_id))
         job_summaries = verifier_job_service.list_verifier_jobs(scan_id)
         refreshed["pending_verifier_jobs"] = sum(1 for job in job_summaries if job.status.value in {"queued", "running"})
+        hypotheses = hypothesis_service.list_hypotheses(scan_id)
         refreshed["candidate_backlog"] = [
             {
-                "path_id": detail.source_path_id,
-                "title": detail.title,
-                "vulnerability_class": detail.payload.vulnerability_class,
-                "severity": detail.severity.value,
-                "confidence": detail.payload.confidence,
-                "verifier_strategy": detail.payload.verifier_strategy,
-                "status": detail.status.value,
+                "hypothesis_id": hypothesis.id,
+                "path_id": hypothesis.source_path_id,
+                "title": hypothesis.title,
+                "vulnerability_class": hypothesis.vulnerability_class,
+                "severity": hypothesis.severity,
+                "confidence": hypothesis.confidence,
+                "verifier_strategy": hypothesis.selected_verifier_strategy or hypothesis.verifier_strategy,
+                "status": hypothesis.status.value,
+                "selected_payload_variant_id": hypothesis.selected_payload_variant_id,
             }
-            for job in job_summaries
-            if job.status.value in {"queued", "running"}
-            if (detail := verifier_job_service.get_verifier_job(job.id)) is not None
+            for hypothesis in hypotheses
+            if hypothesis.status in {HypothesisStatus.NEW, HypothesisStatus.PRIORITIZED, HypothesisStatus.VERIFYING}
         ]
-        refreshed["unresolved_hypotheses"] = list(refreshed["candidate_backlog"])
+        refreshed["unresolved_hypotheses"] = [
+            item for item in refreshed["candidate_backlog"] if item["status"] != HypothesisStatus.VERIFYING.value
+        ]
         refreshed["verifier_outcomes"] = [
             {
-                "job_id": job.id,
-                "status": job.status.value,
-                "finding_id": job.finding_id,
-                "verifier_run_id": job.verifier_run_id,
-                "note": job.last_error,
+                "job_id": hypothesis.verifier_job_id,
+                "status": hypothesis.status.value,
+                "finding_id": hypothesis.finding_id,
+                "verifier_run_id": None,
+                "note": None,
             }
-            for job in job_summaries
-            if job.status.value in {"succeeded", "failed", "cancelled"}
+            for hypothesis in hypotheses
+            if hypothesis.status in {HypothesisStatus.CONFIRMED, HypothesisStatus.REJECTED, HypothesisStatus.ABANDONED}
         ]
         return refreshed
 
@@ -268,6 +282,153 @@ class OrchestrationService:
                 "rationale": fallback_reason,
                 "supporting_observations": [],
             }
+
+        try:
+            decision_provider_key, decision = ai_provider_service.decide_next_action(
+                AiNextActionRequest(
+                    scan_id=str(memory.get("scan_id", "")),
+                    use_ai_planner=payload.use_ai_planner,
+                    max_planning_passes=payload.max_planning_passes,
+                    max_ai_planning_passes=payload.max_ai_planning_passes,
+                    max_verifier_cycles=payload.max_verifier_cycles,
+                    memory=self._ai_memory(memory),
+                ),
+                provider_key=provider_key,
+            )
+            mapping = {
+                AiNextAction.DETERMINISTIC_PLANNER: OrchestrationStepKind.DETERMINISTIC_PLANNER,
+                AiNextAction.AI_PLANNER: OrchestrationStepKind.AI_PLANNER,
+                AiNextAction.VERIFIER_CYCLE: OrchestrationStepKind.VERIFIER_CYCLE,
+                AiNextAction.SUMMARY: OrchestrationStepKind.SUMMARY,
+            }
+            return mapping[decision.next_action], {
+                "source": "ai",
+                "provider_key": decision_provider_key,
+                "confidence": decision.confidence,
+                "rationale": decision.rationale,
+                "supporting_observations": list(decision.supporting_observations),
+            }
+        except Exception as exc:
+            return fallback_kind, {
+                "source": "deterministic-fallback",
+                "provider_key": provider_key,
+                "confidence": 100,
+                "rationale": fallback_reason,
+                "supporting_observations": [f"ai_decision_error: {exc}"],
+            }
+
+    def _select_hypothesis(
+        self,
+        *,
+        provider_key: str | None,
+        scan_id: str,
+        memory: dict[str, object],
+        payload: StartOrchestrationRequest,
+    ) -> tuple[dict[str, object] | None, dict[str, object]]:
+        backlog = memory.get("candidate_backlog", [])
+        if not isinstance(backlog, list) or not backlog:
+            return None, {
+                "source": "deterministic",
+                "provider_key": None,
+                "confidence": 100,
+                "rationale": "No candidate backlog remains for hypothesis selection.",
+                "supporting_observations": [],
+            }
+
+        candidates = []
+        for item in hypothesis_service.list_hypotheses(scan_id):
+            if item.status not in {HypothesisStatus.NEW, HypothesisStatus.PRIORITIZED}:
+                continue
+            detail = hypothesis_service.get_hypothesis(item.id)
+            if detail is None:
+                continue
+            job = verifier_job_service.get_verifier_job(detail.verifier_job_id) if detail.verifier_job_id else None
+            available_payload_variant_ids = []
+            if job and job.payload.replay_plan:
+                available_payload_variant_ids = [variant.id for variant in job.payload.replay_plan.variants]
+            candidates.append(
+                AiHypothesisCandidate(
+                    hypothesis_id=detail.id,
+                    source_path_id=detail.source_path_id,
+                    title=detail.title,
+                    vulnerability_class=detail.vulnerability_class,
+                    severity=detail.severity,
+                    confidence=detail.confidence,
+                    matched_rule=detail.matched_rule,
+                    verifier_strategy=detail.selected_verifier_strategy or detail.verifier_strategy,
+                    status=detail.status.value,
+                    available_payload_variant_ids=available_payload_variant_ids,
+                    matched_signals=list(detail.matched_signals),
+                )
+            )
+
+        if not candidates:
+            return None, {
+                "source": "deterministic",
+                "provider_key": None,
+                "confidence": 100,
+                "rationale": "No unresolved hypotheses remain for selection.",
+                "supporting_observations": [],
+            }
+
+        if payload.use_ai_hypothesis_selection:
+            try:
+                provider, decision = ai_provider_service.select_hypothesis(
+                    AiHypothesisSelectionRequest(scan_id=scan_id, hypotheses=candidates),
+                    provider_key=provider_key,
+                )
+                selected = hypothesis_service.select_hypothesis(
+                    hypothesis_id=decision.selected_hypothesis_id,
+                    decision_source="ai",
+                    selected_verifier_strategy=decision.selected_verifier_strategy,
+                    selected_payload_variant_id=decision.selected_payload_variant_id,
+                )
+                return (
+                    selected.model_dump(mode="json") if selected else None,
+                    {
+                        "source": "ai",
+                        "provider_key": provider,
+                        "confidence": decision.confidence,
+                        "rationale": decision.rationale,
+                        "supporting_observations": list(decision.supporting_observations),
+                    },
+                )
+            except Exception as exc:
+                fallback = sorted(candidates, key=lambda item: (item.confidence, item.severity), reverse=True)[0]
+                selected = hypothesis_service.select_hypothesis(
+                    hypothesis_id=fallback.hypothesis_id,
+                    decision_source="deterministic-fallback",
+                    selected_verifier_strategy=fallback.verifier_strategy,
+                    selected_payload_variant_id=fallback.available_payload_variant_ids[0] if fallback.available_payload_variant_ids else None,
+                )
+                return (
+                    selected.model_dump(mode="json") if selected else None,
+                    {
+                        "source": "deterministic-fallback",
+                        "provider_key": provider_key,
+                        "confidence": 100,
+                        "rationale": "Fell back to highest-confidence unresolved hypothesis.",
+                        "supporting_observations": [f"ai_hypothesis_error: {exc}"],
+                    },
+                )
+
+        selected_candidate = sorted(candidates, key=lambda item: (item.confidence, item.severity), reverse=True)[0]
+        selected = hypothesis_service.select_hypothesis(
+            hypothesis_id=selected_candidate.hypothesis_id,
+            decision_source="deterministic",
+            selected_verifier_strategy=selected_candidate.verifier_strategy,
+            selected_payload_variant_id=selected_candidate.available_payload_variant_ids[0] if selected_candidate.available_payload_variant_ids else None,
+        )
+        return (
+            selected.model_dump(mode="json") if selected else None,
+            {
+                "source": "deterministic",
+                "provider_key": None,
+                "confidence": 100,
+                "rationale": "Selected the highest-confidence unresolved hypothesis deterministically.",
+                "supporting_observations": [f"hypothesis_id={selected_candidate.hypothesis_id}"],
+            },
+        )
 
         try:
             decision_provider_key, decision = ai_provider_service.decide_next_action(
@@ -390,6 +551,13 @@ class OrchestrationService:
                     deterministic_result = planner_service.run_workflow_planner(scan_id)
                     if deterministic_result is None:
                         raise RuntimeError("Deterministic planner could not run for this scan.")
+                    synced = hypothesis_service.sync_hypotheses(
+                        scan_id=scan_id,
+                        session_id=session_id,
+                        planning_run_id=deterministic_result.planning_run_id,
+                        candidates=deterministic_result.candidates,
+                        decision_source="deterministic",
+                    )
                     memory = self._refresh_memory(scan_id, memory)
                     memory["deterministic_planning_runs"] = _memory_int(memory, "deterministic_planning_runs") + 1
                     memory["last_deterministic_event_count"] = _memory_int(memory, "proxy_event_count")
@@ -402,6 +570,7 @@ class OrchestrationService:
                         payload=deterministic_result.model_dump(mode="json"),
                         memory_updates={
                             "planning_runs": [deterministic_result.planning_run_id],
+                            "notes": [f"deterministic_hypotheses_synced={len(synced)}"],
                             "deterministic_planning_runs": memory["deterministic_planning_runs"],
                             "last_deterministic_event_count": memory["last_deterministic_event_count"],
                             "last_deterministic_candidate_count": memory["last_deterministic_candidate_count"],
@@ -421,6 +590,15 @@ class OrchestrationService:
                     )
                     if ai_result is None:
                         raise RuntimeError("AI-assisted planner could not run for this scan.")
+                    ai_planning_detail = planner_service.get_planning_run(ai_result.planning_run_id)
+                    ai_candidates = ai_planning_detail.candidates if ai_planning_detail is not None else []
+                    synced = hypothesis_service.sync_hypotheses(
+                        scan_id=scan_id,
+                        session_id=session_id,
+                        planning_run_id=ai_result.planning_run_id,
+                        candidates=ai_candidates,
+                        decision_source="ai",
+                    )
                     memory = self._refresh_memory(scan_id, memory)
                     memory["ai_planning_runs"] = _memory_int(memory, "ai_planning_runs") + 1
                     memory["last_ai_candidate_count"] = ai_result.candidate_count
@@ -432,6 +610,7 @@ class OrchestrationService:
                         payload=ai_result.model_dump(mode="json"),
                         memory_updates={
                             "planning_runs": [ai_result.planning_run_id],
+                            "notes": [f"ai_hypotheses_synced={len(synced)}"],
                             "ai_planning_runs": memory["ai_planning_runs"],
                             "last_ai_candidate_count": memory["last_ai_candidate_count"],
                         },
@@ -439,7 +618,30 @@ class OrchestrationService:
                     continue
 
                 if next_kind == OrchestrationStepKind.VERIFIER_CYCLE:
-                    processed = runtime.run_once(scan_id=scan_id)
+                    selected_hypothesis, hypothesis_meta = self._select_hypothesis(
+                        provider_key=provider_key,
+                        scan_id=scan_id,
+                        memory=memory,
+                        payload=payload,
+                    )
+                    recorder.append_step(
+                        kind=OrchestrationStepKind.HYPOTHESIS_SELECTION,
+                        status=OrchestrationStepStatus.COMPLETED if selected_hypothesis is not None else OrchestrationStepStatus.SKIPPED,
+                        title="Select hypothesis for verification",
+                        detail=str(hypothesis_meta["rationale"]),
+                        payload={"selected_hypothesis": selected_hypothesis, **hypothesis_meta},
+                        memory_updates={
+                            "notes": [f"selected_hypothesis={selected_hypothesis['id'] if selected_hypothesis else 'none'}"],
+                        },
+                    )
+
+                    preferred_job_id = cast(
+                        str | None,
+                        str(selected_hypothesis.get("verifier_job_id"))
+                        if isinstance(selected_hypothesis, dict) and selected_hypothesis.get("verifier_job_id") is not None
+                        else None,
+                    )
+                    processed = runtime.run_once(scan_id=scan_id, preferred_job_id=preferred_job_id)
                     if not processed:
                         recorder.append_step(
                             kind=OrchestrationStepKind.VERIFIER_CYCLE,

@@ -79,6 +79,7 @@ def test_orchestration_session_runs_planners_and_verifier_cycles(client):
     assert "decision" in step_kinds
     assert "deterministic_planner" in step_kinds
     assert "ai_planner" in step_kinds
+    assert "hypothesis_selection" in step_kinds
     assert "summary" in step_kinds
     assert session["memory"]["planning_runs"]
     assert session["memory"]["verifier_cycles"]
@@ -110,3 +111,20 @@ def test_orchestration_session_runs_planners_and_verifier_cycles(client):
     detail = detail_response.json()
     assert detail["id"] == session["id"]
     assert len(detail["steps"]) >= 4
+
+    hypothesis_selection_steps = [step for step in detail["steps"] if step["kind"] == "hypothesis_selection"]
+    assert hypothesis_selection_steps
+    selected = hypothesis_selection_steps[0]["payload"]["selected_hypothesis"]
+    assert selected is not None
+    assert hypothesis_selection_steps[0]["payload"]["source"] in {"ai", "deterministic", "deterministic-fallback"}
+
+    hypotheses_response = client.get(f"/api/v1/hypotheses/scan/{scan_id}")
+    assert hypotheses_response.status_code == 200
+    hypotheses = hypotheses_response.json()
+    assert len(hypotheses) >= 1
+    assert any(hypothesis["status"] in {"prioritized", "verifying", "confirmed", "rejected", "abandoned"} for hypothesis in hypotheses)
+
+    hypothesis_detail_response = client.get(f"/api/v1/hypotheses/{selected['id']}")
+    assert hypothesis_detail_response.status_code == 200
+    hypothesis_detail = hypothesis_detail_response.json()
+    assert hypothesis_detail["selected_verifier_strategy"]

@@ -8,10 +8,11 @@ from sqlalchemy.orm import Session
 
 from api.app.config import get_settings
 from api.app.database import session_scope
-from api.app.db_models import CallbackEventRecord, CallbackExpectationRecord, FindingRecord, PlanningRunRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
+from api.app.db_models import CallbackEventRecord, CallbackExpectationRecord, FindingRecord, OrchestrationHypothesisRecord, PlanningRunRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
 from api.repositories.callback_repository import CallbackRepository
 from api.repositories.event_repository import EventRepository
 from api.repositories.finding_repository import FindingRepository
+from api.repositories.hypothesis_repository import HypothesisRepository
 from api.repositories.planning_run_repository import PlanningRunRepository
 from api.repositories.replay_artifact_repository import ReplayArtifactRepository
 from api.repositories.scan_repository import ScanRepository
@@ -30,11 +31,12 @@ from api.schemas.events import (
     WorkflowGraphUpdate,
 )
 from api.schemas.findings import ContextReference, FindingDetail, FindingEvidence, FindingSeverity, FindingStatus, FindingSummary, FindingUpsert
+from api.schemas.hypotheses import HypothesisDetail, HypothesisStatus, HypothesisSummary
 from api.schemas.ai import AiPlanningProposal
 from api.schemas.callbacks import CallbackEventDetail, CallbackExpectationDetail, CallbackExpectationStatus, CallbackExpectationSummary, CallbackKind
 from tools.verifier.callback_analysis import analyze_callback_event
 from api.schemas.producer_contracts import ProxyHttpObservedContract, VerifierFindingConfirmedContract, WorkflowMapperPathFlaggedContract
-from api.schemas.planner import PlannerCandidateSummary
+from api.schemas.planner import PlannerCandidateSummary, VerifierStrategy
 from api.schemas.planning_runs import PlanningMode, PlanningRunDetail, PlanningRunSummary
 from api.schemas.replay_artifacts import ReplayArtifactDetail, ReplayArtifactMaterial
 from api.services.replay_artifact_policy import redact_headers, redact_response_excerpt
@@ -69,6 +71,10 @@ RISK_ORDER = {
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _coerce_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def _build_graph_stats(nodes: list[WorkflowNode], edges: list[WorkflowEdge], flagged_paths: int) -> WorkflowGraphStats:
@@ -380,6 +386,41 @@ def _planning_run_record_to_detail(record: PlanningRunRecord) -> PlanningRunDeta
         request=dict(record.request_json),
         candidates=candidates,
         proposals=proposals,
+    )
+
+
+def _hypothesis_record_to_summary(record: OrchestrationHypothesisRecord) -> HypothesisSummary:
+    return HypothesisSummary(
+        id=record.id,
+        scan_id=record.scan_id,
+        session_id=record.session_id,
+        planning_run_id=record.planning_run_id,
+        source_path_id=record.source_path_id,
+        title=record.title,
+        vulnerability_class=record.vulnerability_class,
+        severity=record.severity,
+        confidence=record.confidence,
+        matched_rule=record.matched_rule,
+        verifier_strategy=VerifierStrategy(record.verifier_strategy),
+        status=HypothesisStatus(record.status),
+        selected_payload_variant_id=record.selected_payload_variant_id,
+        selected_verifier_strategy=(
+            None if record.selected_verifier_strategy is None else VerifierStrategy(record.selected_verifier_strategy)
+        ),
+        decision_source=record.decision_source,
+        verifier_job_id=record.verifier_job_id,
+        finding_id=record.finding_id,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _hypothesis_record_to_detail(record: OrchestrationHypothesisRecord) -> HypothesisDetail:
+    summary = _hypothesis_record_to_summary(record)
+    return HypothesisDetail(
+        **summary.model_dump(),
+        rationale=record.rationale,
+        matched_signals=list(record.matched_signals_json),
     )
 
 
@@ -1595,23 +1636,145 @@ class AuditStore:
             record = PlanningRunRepository(session).get(planning_run_id)
             return _planning_run_record_to_detail(record) if record else None
 
+    def sync_hypotheses_from_candidates(
+        self,
+        *,
+        scan_id: str,
+        session_id: str | None,
+        planning_run_id: str | None,
+        candidates: list[PlannerCandidateSummary],
+        decision_source: str,
+    ) -> list[HypothesisSummary]:
+        with session_scope() as session:
+            if ScanRepository(session).get(scan_id) is None:
+                return []
+
+            hypothesis_repository = HypothesisRepository(session)
+            job_repository = VerifierJobRepository(session)
+            job_by_path = {job.source_path_id: job for job in job_repository.list_for_scan(scan_id)}
+            now = _utc_now()
+            results: list[HypothesisSummary] = []
+            for candidate in candidates:
+                record = hypothesis_repository.get_by_scan_and_path(scan_id, candidate.path_id)
+                job_record = job_by_path.get(candidate.path_id)
+                terminal_statuses = {HypothesisStatus.CONFIRMED.value, HypothesisStatus.REJECTED.value, HypothesisStatus.ABANDONED.value}
+                if record is None:
+                    record = OrchestrationHypothesisRecord(
+                        id=f"hyp-{uuid4().hex[:12]}",
+                        scan_id=scan_id,
+                        session_id=session_id,
+                        planning_run_id=planning_run_id,
+                        source_path_id=candidate.path_id,
+                        title=candidate.title,
+                        vulnerability_class=candidate.vulnerability_class.value,
+                        severity=candidate.severity.value,
+                        confidence=candidate.confidence,
+                        matched_rule=candidate.matched_rule,
+                        verifier_strategy=candidate.verifier_strategy.value,
+                        matched_signals_json=list(candidate.matched_signals),
+                        rationale=candidate.match_explanation,
+                        status=HypothesisStatus.NEW.value,
+                        selected_payload_variant_id=None,
+                        selected_verifier_strategy=None,
+                        decision_source=decision_source,
+                        verifier_job_id=job_record.id if job_record is not None else None,
+                        finding_id=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    hypothesis_repository.add(record)
+                else:
+                    record.session_id = session_id
+                    record.planning_run_id = planning_run_id
+                    record.title = candidate.title
+                    record.vulnerability_class = candidate.vulnerability_class.value
+                    record.severity = candidate.severity.value
+                    record.confidence = candidate.confidence
+                    record.matched_rule = candidate.matched_rule
+                    record.verifier_strategy = candidate.verifier_strategy.value
+                    record.matched_signals_json = list(candidate.matched_signals)
+                    record.rationale = candidate.match_explanation
+                    record.decision_source = decision_source
+                    record.verifier_job_id = job_record.id if job_record is not None else record.verifier_job_id
+                    if record.status in terminal_statuses:
+                        record.status = HypothesisStatus.NEW.value
+                        record.finding_id = None
+                    record.updated_at = now
+                results.append(_hypothesis_record_to_summary(record))
+            return results
+
+    def list_hypotheses(self, scan_id: str) -> list[HypothesisSummary]:
+        with session_scope() as session:
+            records = HypothesisRepository(session).list_for_scan(scan_id)
+            return [_hypothesis_record_to_summary(record) for record in records]
+
+    def get_hypothesis(self, hypothesis_id: str) -> HypothesisDetail | None:
+        with session_scope() as session:
+            record = HypothesisRepository(session).get(hypothesis_id)
+            return _hypothesis_record_to_detail(record) if record else None
+
+    def select_hypothesis(
+        self,
+        *,
+        hypothesis_id: str,
+        decision_source: str,
+        selected_verifier_strategy: str,
+        selected_payload_variant_id: str | None,
+    ) -> HypothesisDetail | None:
+        with session_scope() as session:
+            hypothesis_repository = HypothesisRepository(session)
+            record = hypothesis_repository.get(hypothesis_id)
+            if record is None:
+                return None
+
+            job_record = VerifierJobRepository(session).get_active_by_path(record.scan_id, record.source_path_id)
+            if job_record is not None:
+                payload = VerifierJobPayload.model_validate(job_record.payload_json)
+                payload.preferred_variant_id = selected_payload_variant_id
+                payload.preferred_verifier_strategy = VerifierStrategy(selected_verifier_strategy)
+                job_record.payload_json = payload.model_dump(mode="json")
+                record.verifier_job_id = job_record.id
+
+            record.status = HypothesisStatus.PRIORITIZED.value
+            record.selected_payload_variant_id = selected_payload_variant_id
+            record.selected_verifier_strategy = selected_verifier_strategy
+            record.decision_source = decision_source
+            record.updated_at = _utc_now()
+            return _hypothesis_record_to_detail(record)
+
     def claim_verifier_job(self, payload: ClaimVerifierJobRequest) -> VerifierJobDetail | None:
         with session_scope() as session:
             repository = VerifierJobRepository(session)
             now = _utc_now()
-            claimable = repository.list_claimable(now=now, scan_id=payload.scan_id)
-            if not claimable:
-                return None
+            if payload.preferred_job_id is not None:
+                preferred = repository.get(payload.preferred_job_id)
+                if preferred is None:
+                    return None
+                if preferred.status != VerifierJobStatus.QUEUED.value or _coerce_utc(preferred.available_at) > now:
+                    return None
+                if payload.scan_id is not None and preferred.scan_id != payload.scan_id:
+                    return None
+                record = preferred
+            else:
+                claimable = repository.list_claimable(now=now, scan_id=payload.scan_id)
+                if not claimable:
+                    return None
 
-            record = sorted(
-                claimable,
-                key=lambda item: (_severity_priority(item.severity), item.available_at, item.created_at, item.id),
-            )[0]
+                record = sorted(
+                    claimable,
+                    key=lambda item: (_severity_priority(item.severity), item.available_at, item.created_at, item.id),
+                )[0]
             record.status = VerifierJobStatus.RUNNING.value
             record.attempt_count += 1
             record.claimed_at = now
             record.worker_id = payload.worker_id or "verifier-worker"
             record.updated_at = now
+
+            hypothesis_record = HypothesisRepository(session).get_by_scan_and_path(record.scan_id, record.source_path_id)
+            if hypothesis_record is not None:
+                hypothesis_record.status = HypothesisStatus.VERIFYING.value
+                hypothesis_record.verifier_job_id = record.id
+                hypothesis_record.updated_at = now
 
             EventRepository(session).add(
                 _create_event_record(
@@ -1644,6 +1807,13 @@ class AuditStore:
                 record.verifier_run_id = payload.verifier_run_id
             if payload.finding_id is not None:
                 record.finding_id = payload.finding_id
+
+            hypothesis_record = HypothesisRepository(session).get_by_scan_and_path(record.scan_id, record.source_path_id)
+            if hypothesis_record is not None:
+                hypothesis_record.verifier_job_id = record.id
+                hypothesis_record.finding_id = payload.finding_id
+                hypothesis_record.status = HypothesisStatus.CONFIRMED.value if payload.finding_id is not None else HypothesisStatus.REJECTED.value
+                hypothesis_record.updated_at = now
 
             EventRepository(session).add(
                 _create_event_record(
@@ -1692,6 +1862,12 @@ class AuditStore:
                 message = f"Verifier job {record.id} failed permanently."
                 stage = "verification"
                 severity = EventSeverity.HIGH
+
+            hypothesis_record = HypothesisRepository(session).get_by_scan_and_path(record.scan_id, record.source_path_id)
+            if hypothesis_record is not None:
+                hypothesis_record.verifier_job_id = record.id
+                hypothesis_record.status = HypothesisStatus.PRIORITIZED.value if retry_scheduled else HypothesisStatus.ABANDONED.value
+                hypothesis_record.updated_at = now
 
             EventRepository(session).add(
                 _create_event_record(

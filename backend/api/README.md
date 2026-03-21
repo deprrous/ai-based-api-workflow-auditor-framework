@@ -17,6 +17,7 @@ This module hosts the FastAPI control plane exposed to the frontend.
 - `routers/scans.py` - scan listing, detail, creation, event ingestion, SSE, and scan-linked workflow endpoints.
 - `routers/contracts.py` - runtime producer contract catalog endpoints.
 - `routers/findings.py` - finding listing and detail endpoints.
+- `routers/hypotheses.py` - persisted orchestration hypothesis listing and detail endpoints.
 - `routers/ai.py` - provider-neutral AI catalog endpoints.
 - `routers/artifacts.py` - source-code and API-spec artifact ingestion and listing endpoints.
 - `routers/orchestration.py` - autonomous orchestration session endpoints.
@@ -30,6 +31,7 @@ This module hosts the FastAPI control plane exposed to the frontend.
 - `app/database.py` - SQLAlchemy engine and session management.
 - `app/db_models.py` - relational persistence models for scans, graphs, and events.
 - `services/finding_service.py` - finding retrieval and filtering facade.
+- `services/hypothesis_service.py` - orchestration hypothesis retrieval and selection support.
 - `services/ai_provider_service.py` - provider-neutral AI catalog service.
 - `services/artifact_service.py` - source-code and OpenAPI ingestion service.
 - `services/orchestration_service.py` - autonomous orchestration session lifecycle and trace persistence.
@@ -87,6 +89,25 @@ Verifier job worker endpoints accept either:
 - or `Authorization: Bearer <token>`
 
 Service accounts should include `run:verifier_jobs` when a worker must claim, retry, or complete queued verifier jobs.
+
+## Autonomous orchestration
+
+Autonomous sessions now persist first-class hypotheses with lifecycle states such as:
+
+- `new`
+- `prioritized`
+- `verifying`
+- `confirmed`
+- `rejected`
+- `abandoned`
+
+The orchestration loop can also use the provider-neutral AI layer to:
+
+- choose the next orchestration action from memory
+- choose which unresolved hypothesis to pursue next
+- choose which verifier strategy or payload variant to try first
+
+Deterministic fallback remains in place so orchestration stays resilient when AI is unavailable or makes a poor choice.
 
 ## Automatic verifier runner
 
@@ -238,6 +259,8 @@ Planner outputs now carry:
 - `GET /api/v1/ai/providers/catalog` - list the provider-neutral AI catalog for future orchestration wiring.
 - `GET /api/v1/findings` - list findings with optional scan, severity, and status filters.
 - `GET /api/v1/findings/{finding_id}` - read detailed finding data and evidence.
+- `GET /api/v1/hypotheses/scan/{scan_id}` - list persisted orchestration hypotheses for a scan.
+- `GET /api/v1/hypotheses/{hypothesis_id}` - read one orchestration hypothesis in detail.
 - `GET /api/v1/replay-artifacts/{artifact_id}` - read a persisted replay artifact for worker execution.
 - `GET /api/v1/replay-artifacts/scan/{scan_id}` - list persisted replay artifacts for a scan.
 - `GET /api/v1/verifier-jobs/{verifier_job_id}` - read queued verifier job detail.

@@ -273,6 +273,32 @@ class OrchestrationStepRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class OrchestrationHypothesisRecord(Base):
+    __tablename__ = "orchestration_hypotheses"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(ForeignKey("orchestration_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
+    planning_run_id: Mapped[str | None] = mapped_column(ForeignKey("planning_runs.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_path_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    vulnerability_class: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+    matched_rule: Mapped[str] = mapped_column(String(120), nullable=False)
+    verifier_strategy: Mapped[str] = mapped_column(String(64), nullable=False)
+    matched_signals_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    selected_payload_variant_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    selected_verifier_strategy: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decision_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verifier_job_id: Mapped[str | None] = mapped_column(ForeignKey("verifier_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    finding_id: Mapped[str | None] = mapped_column(ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ServiceAccountRecord(Base):
     __tablename__ = "service_accounts"
 

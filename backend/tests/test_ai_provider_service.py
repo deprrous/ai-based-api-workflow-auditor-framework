@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from api.schemas.ai import AiNextActionRequest, AiPlanningCandidate
+from api.schemas.ai import AiHypothesisSelectionRequest, AiNextActionRequest, AiPlanningCandidate
 from api.services.ai_provider_service import ai_provider_service
 from orchestrator.providers.openai_compatible_planner import OpenAiCompatiblePlanningProvider
 
@@ -98,3 +98,44 @@ def test_mock_provider_can_decide_next_action() -> None:
     assert provider_key == "mock"
     assert decision.next_action == "deterministic_planner"
     assert decision.confidence >= 0
+
+
+def test_mock_provider_can_select_hypothesis() -> None:
+    provider_key, decision = ai_provider_service.select_hypothesis(
+        AiHypothesisSelectionRequest(
+            scan_id="scan-1",
+            hypotheses=[
+                {
+                    "hypothesis_id": "hyp-1",
+                    "source_path_id": "path-1",
+                    "title": "Tenant billing read path",
+                    "vulnerability_class": "tenant_isolation",
+                    "severity": "high",
+                    "confidence": 84,
+                    "matched_rule": "tenant_isolation",
+                    "verifier_strategy": "tenant_boundary_replay",
+                    "status": "new",
+                    "available_payload_variant_ids": ["tenant-boundary-1", "tenant-boundary-2"],
+                    "matched_signals": ["tenant-boundary-resource"],
+                },
+                {
+                    "hypothesis_id": "hyp-2",
+                    "source_path_id": "path-2",
+                    "title": "Destructive delete path",
+                    "vulnerability_class": "unsafe_destructive_action",
+                    "severity": "critical",
+                    "confidence": 91,
+                    "matched_rule": "unsafe_destructive_action",
+                    "verifier_strategy": "destructive_action_replay",
+                    "status": "new",
+                    "available_payload_variant_ids": ["destructive-confirmation-bypass"],
+                    "matched_signals": ["destructive-action"],
+                },
+            ],
+        ),
+        provider_key="mock",
+    )
+
+    assert provider_key == "mock"
+    assert decision.selected_hypothesis_id == "hyp-2"
+    assert decision.selected_payload_variant_id == "destructive-confirmation-bypass"

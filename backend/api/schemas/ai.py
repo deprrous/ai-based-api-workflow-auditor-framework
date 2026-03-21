@@ -133,3 +133,32 @@ class AiNextActionDecision(BaseModel):
     confidence: int = Field(ge=0, le=100)
     rationale: str
     supporting_observations: list[str] = Field(default_factory=list)
+
+
+class AiHypothesisCandidate(BaseModel):
+    hypothesis_id: str
+    source_path_id: str
+    title: str
+    vulnerability_class: VulnerabilityClass
+    severity: str
+    confidence: int = Field(ge=0, le=100)
+    matched_rule: str
+    verifier_strategy: VerifierStrategy
+    status: str
+    available_payload_variant_ids: list[str] = Field(default_factory=list)
+    matched_signals: list[str] = Field(default_factory=list)
+
+
+class AiHypothesisSelectionRequest(BaseModel):
+    scan_id: str
+    hypotheses: list[AiHypothesisCandidate] = Field(default_factory=list)
+
+
+class AiHypothesisSelectionDecision(BaseModel):
+    selected_hypothesis_id: str
+    selected_source_path_id: str
+    selected_verifier_strategy: VerifierStrategy
+    selected_payload_variant_id: str | None = None
+    confidence: int = Field(ge=0, le=100)
+    rationale: str
+    supporting_observations: list[str] = Field(default_factory=list)

@@ -7,6 +7,8 @@ from typing import Any, Callable
 import httpx
 
 from api.schemas.ai import (
+    AiHypothesisSelectionDecision,
+    AiHypothesisSelectionRequest,
     AiCapability,
     AiNextActionDecision,
     AiNextActionRequest,
@@ -130,3 +132,33 @@ class OpenAiCompatiblePlanningProvider:
         content = response_payload["choices"][0]["message"]["content"]
         parsed = json.loads(content)
         return AiNextActionDecision.model_validate(parsed)
+
+    def select_hypothesis(self, request: AiHypothesisSelectionRequest) -> AiHypothesisSelectionDecision:
+        self.validate()
+        payload = {
+            "model": self.model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You choose which pentest hypothesis to verify next. "
+                        "Return JSON with: selected_hypothesis_id, selected_source_path_id, selected_verifier_strategy, selected_payload_variant_id, confidence, rationale, supporting_observations."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(request.model_dump(mode="json"), ensure_ascii=True),
+                },
+            ],
+        }
+        response_payload = self.transport(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            model=self.model,
+            verify_tls=self.verify_tls,
+            payload=payload,
+        )
+        content = response_payload["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        return AiHypothesisSelectionDecision.model_validate(parsed)

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from api.schemas.ai import (
+    AiHypothesisSelectionDecision,
+    AiHypothesisSelectionRequest,
     AiCapability,
     AiNextActionDecision,
     AiNextActionRequest,
@@ -29,6 +31,8 @@ class AiPlanningProvider(AiProvider, Protocol):
     def plan(self, candidates: list[AiPlanningCandidate], *, min_priority_score: int) -> list[AiPlanningProposal]: ...
 
     def decide_next_action(self, request: AiNextActionRequest) -> AiNextActionDecision: ...
+
+    def select_hypothesis(self, request: AiHypothesisSelectionRequest) -> AiHypothesisSelectionDecision: ...
 
 
 def build_descriptor(

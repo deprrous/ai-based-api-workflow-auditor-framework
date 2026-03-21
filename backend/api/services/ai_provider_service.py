@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from api.app.config import get_settings
-from api.schemas.ai import AiNextActionDecision, AiNextActionRequest, AiPlanningCandidate, AiPlanningProposal, AiProviderCatalog
+from api.schemas.ai import (
+    AiHypothesisSelectionDecision,
+    AiHypothesisSelectionRequest,
+    AiNextActionDecision,
+    AiNextActionRequest,
+    AiPlanningCandidate,
+    AiPlanningProposal,
+    AiProviderCatalog,
+)
 from orchestrator.providers.registry import build_planning_provider, get_provider_catalog
 
 
@@ -28,6 +36,16 @@ class AiProviderService:
     ) -> tuple[str, AiNextActionDecision]:
         provider = build_planning_provider(settings=get_settings(), provider_key=provider_key)
         decision = provider.decide_next_action(request)
+        return provider.descriptor.key, decision
+
+    def select_hypothesis(
+        self,
+        request: AiHypothesisSelectionRequest,
+        *,
+        provider_key: str | None = None,
+    ) -> tuple[str, AiHypothesisSelectionDecision]:
+        provider = build_planning_provider(settings=get_settings(), provider_key=provider_key)
+        decision = provider.select_hypothesis(request)
         return provider.descriptor.key, decision
 
 

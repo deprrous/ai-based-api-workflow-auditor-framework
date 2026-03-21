@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from api.schemas.ai import (
+    AiHypothesisSelectionDecision,
+    AiHypothesisSelectionRequest,
     AiCapability,
     AiNextAction,
     AiNextActionDecision,
@@ -120,5 +122,31 @@ class MockPlanningProvider:
             supporting_observations=[
                 f"candidate_backlog={len(memory.candidate_backlog)}",
                 f"pending_verifier_jobs={memory.pending_verifier_jobs}",
+            ],
+        )
+
+    def select_hypothesis(self, request: AiHypothesisSelectionRequest) -> AiHypothesisSelectionDecision:
+        if not request.hypotheses:
+            raise ValueError("No hypotheses are available for selection.")
+
+        def rank(candidate):
+            severity_score = _severity_score(candidate.severity)
+            payload_bonus = 5 if candidate.available_payload_variant_ids else 0
+            signal_bonus = min(8, len(candidate.matched_signals) * 2)
+            return severity_score + candidate.confidence + payload_bonus + signal_bonus
+
+        selected = max(request.hypotheses, key=rank)
+        selected_variant = selected.available_payload_variant_ids[0] if selected.available_payload_variant_ids else None
+        return AiHypothesisSelectionDecision(
+            selected_hypothesis_id=selected.hypothesis_id,
+            selected_source_path_id=selected.source_path_id,
+            selected_verifier_strategy=selected.verifier_strategy,
+            selected_payload_variant_id=selected_variant,
+            confidence=min(100, rank(selected)),
+            rationale="Mock selector prioritized the highest-confidence unresolved hypothesis with the strongest severity and available payload options.",
+            supporting_observations=[
+                f"severity={selected.severity}",
+                f"confidence={selected.confidence}",
+                f"available_variants={len(selected.available_payload_variant_ids)}",
             ],
         )

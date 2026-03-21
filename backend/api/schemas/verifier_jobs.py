@@ -128,6 +128,8 @@ class VerifierJobPayload(BaseModel):
     matched_rule: str = Field(min_length=3, max_length=120)
     verifier_strategy: VerifierStrategy
     matched_signals: list[str] = Field(default_factory=list)
+    preferred_variant_id: str | None = None
+    preferred_verifier_strategy: VerifierStrategy | None = None
     workflow_node_ids: list[str] = Field(default_factory=list)
     workflow_nodes: list[WorkflowNode] = Field(default_factory=list)
     workflow_edges: list[WorkflowEdge] = Field(default_factory=list)
@@ -162,6 +164,7 @@ class VerifierJobDetail(VerifierJobSummary):
 class ClaimVerifierJobRequest(BaseModel):
     scan_id: str | None = Field(default=None, max_length=64)
     worker_id: str | None = Field(default=None, max_length=120)
+    preferred_job_id: str | None = Field(default=None, max_length=64)
 
 
 class ClaimVerifierJobResponse(BaseModel):
