@@ -238,6 +238,41 @@ class PlanningRunRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class OrchestrationSessionRecord(Base):
+    __tablename__ = "orchestration_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    provider_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    current_phase: Mapped[str] = mapped_column(String(64), nullable=False)
+    max_verifier_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_verifier_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    request_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    memory_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OrchestrationStepRecord(Base):
+    __tablename__ = "orchestration_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("orchestration_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    memory_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class ServiceAccountRecord(Base):
     __tablename__ = "service_accounts"
 

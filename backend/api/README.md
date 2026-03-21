@@ -19,6 +19,7 @@ This module hosts the FastAPI control plane exposed to the frontend.
 - `routers/findings.py` - finding listing and detail endpoints.
 - `routers/ai.py` - provider-neutral AI catalog endpoints.
 - `routers/artifacts.py` - source-code and API-spec artifact ingestion and listing endpoints.
+- `routers/orchestration.py` - autonomous orchestration session endpoints.
 - `routers/planner.py` - deterministic workflow planner execution endpoints.
 - `routers/reports.py` - scan report and evidence export endpoints.
 - `routers/service_accounts.py` - service-account management endpoints for backend workers.
@@ -31,6 +32,7 @@ This module hosts the FastAPI control plane exposed to the frontend.
 - `services/finding_service.py` - finding retrieval and filtering facade.
 - `services/ai_provider_service.py` - provider-neutral AI catalog service.
 - `services/artifact_service.py` - source-code and OpenAPI ingestion service.
+- `services/orchestration_service.py` - autonomous orchestration session lifecycle and trace persistence.
 - `services/planner_service.py` - deterministic planner that derives flagged paths from proxy observations.
 - `services/report_service.py` - scan report and evidence bundle builder.
 - `services/service_account_service.py` - backend worker credential lifecycle and authentication support.
@@ -226,6 +228,9 @@ Planner outputs now carry:
 - `POST /api/v1/scans/{scan_id}/planner/run-ai` - run the AI-assisted planner on deterministic candidates.
 - `GET /api/v1/scans/{scan_id}/planner/history` - list planning runs for the scan.
 - `GET /api/v1/scans/planner/runs/{planning_run_id}` - read planner run detail and compare decisions.
+- `POST /api/v1/scans/{scan_id}/orchestration/start` - start an autonomous pentest orchestration session.
+- `GET /api/v1/scans/{scan_id}/orchestration/sessions` - list orchestration sessions for the scan.
+- `GET /api/v1/scans/orchestration/sessions/{session_id}` - read orchestration session detail and trace.
 - `POST /api/v1/scans/{scan_id}/events` - ingest proxy, orchestrator, mapper, or verifier runtime output.
 - `GET /api/v1/scans/{scan_id}/workflow` - read the persisted graph for that scan run.
 - `POST /api/v1/scans` - queue a new scan run and seed its workflow graph.

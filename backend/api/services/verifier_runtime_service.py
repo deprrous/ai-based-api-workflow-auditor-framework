@@ -692,9 +692,10 @@ class VerifierRuntimeService:
     poll_interval_seconds: float = 2.0
     _stop_event: asyncio.Event | None = None
 
-    def run_once(self) -> bool:
+    def run_once(self, *, scan_id: str | None = None) -> bool:
         job = verifier_job_service.claim_verifier_job(
             ClaimVerifierJobRequest(
+                scan_id=scan_id,
                 worker_id=self.worker_id,
             )
         )

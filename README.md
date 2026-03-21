@@ -129,6 +129,8 @@ The verifier now also supports out-of-band callback confirmation paths and taint
 
 It now also has headless-browser execution hooks for DOM/XSS-style verification on top of HTTP replay.
 
+The backend now also has a first autonomous pentest orchestration session layer that can plan, loop verifier work, and persist a step-by-step execution trace.
+
 ```bash
 cd frontend
 npm install

@@ -31,3 +31,15 @@ The backend now also supports an AI-assisted planner mode that can rank determin
 - `mock` provider works without API keys for local validation
 - `openai-compatible` provider is scaffolded for real hosted or local gateways
 - verifier replay remains the source of truth even when AI assists planning
+
+## Current orchestration session progress
+
+The backend now has a first autonomous orchestration session layer.
+
+- it can prepare scan context
+- run deterministic planning
+- optionally run AI-assisted planning
+- loop verifier cycles automatically
+- persist steps and memory snapshots for later review
+
+This is not yet a fully self-improving agent, but it is the first real persisted pentest loop instead of isolated planner or verifier calls.
