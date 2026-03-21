@@ -18,6 +18,8 @@ from api.schemas.orchestration import (
     OrchestrationStepStatus,
     StartOrchestrationRequest,
 )
+from api.services.event_service import event_service
+from api.services.finding_service import finding_service
 from api.services.planner_service import planner_service
 from api.services.scan_service import scan_service
 from api.services.verifier_job_service import verifier_job_service
@@ -68,6 +70,7 @@ class SessionRecorder:
     provider_key: str | None
     request_payload: dict[str, object]
     max_verifier_cycles: int
+    initial_memory: dict[str, object]
     sequence: int = 0
 
     def create(self) -> None:
@@ -85,7 +88,7 @@ class SessionRecorder:
                     max_verifier_cycles=self.max_verifier_cycles,
                     completed_verifier_cycles=0,
                     request_json=self.request_payload,
-                    memory_json={"planning_runs": [], "verifier_cycles": [], "notes": []},
+                    memory_json=self.initial_memory,
                     started_at=now,
                     completed_at=None,
                     last_error=None,
@@ -155,6 +158,58 @@ class SessionRecorder:
 
 
 class OrchestrationService:
+    def _initial_memory(self) -> dict[str, object]:
+        return {
+            "planning_runs": [],
+            "verifier_cycles": [],
+            "notes": [],
+            "decisions": [],
+            "proxy_event_count": 0,
+            "finding_count": 0,
+            "pending_verifier_jobs": 0,
+            "deterministic_planning_runs": 0,
+            "ai_planning_runs": 0,
+            "last_deterministic_event_count": 0,
+            "last_deterministic_candidate_count": 0,
+            "last_ai_candidate_count": 0,
+            "last_step_kind": None,
+        }
+
+    def _refresh_memory(self, scan_id: str, memory: dict[str, object]) -> dict[str, object]:
+        refreshed = dict(memory)
+        events = event_service.list_scan_events(scan_id, limit=1000)
+        refreshed["proxy_event_count"] = sum(1 for event in events if event.event_type == "proxy.http_observed")
+        refreshed["finding_count"] = len(finding_service.list_findings(scan_id=scan_id))
+        refreshed["pending_verifier_jobs"] = sum(
+            1 for job in verifier_job_service.list_verifier_jobs(scan_id) if job.status.value in {"queued", "running"}
+        )
+        return refreshed
+
+    def _choose_next_action(self, memory: dict[str, object], payload: StartOrchestrationRequest) -> tuple[OrchestrationStepKind, str]:
+        proxy_event_count = int(memory.get("proxy_event_count", 0))
+        last_deterministic_event_count = int(memory.get("last_deterministic_event_count", 0))
+        deterministic_planning_runs = int(memory.get("deterministic_planning_runs", 0))
+        ai_planning_runs = int(memory.get("ai_planning_runs", 0))
+        last_deterministic_candidate_count = int(memory.get("last_deterministic_candidate_count", 0))
+        last_ai_candidate_count = int(memory.get("last_ai_candidate_count", 0))
+        pending_verifier_jobs = int(memory.get("pending_verifier_jobs", 0))
+        completed_verifier_cycles = int(memory.get("completed_verifier_cycles", 0))
+
+        if proxy_event_count > last_deterministic_event_count and deterministic_planning_runs < payload.max_planning_passes:
+            return OrchestrationStepKind.DETERMINISTIC_PLANNER, "New proxy observations are available and have not yet been re-planned."
+
+        if (
+            payload.use_ai_planner
+            and last_deterministic_candidate_count > last_ai_candidate_count
+            and ai_planning_runs < payload.max_ai_planning_passes
+        ):
+            return OrchestrationStepKind.AI_PLANNER, "New deterministic candidates are available for AI prioritization."
+
+        if pending_verifier_jobs > 0 and completed_verifier_cycles < payload.max_verifier_cycles:
+            return OrchestrationStepKind.VERIFIER_CYCLE, "Queued verifier jobs remain and the cycle budget allows another replay iteration."
+
+        return OrchestrationStepKind.SUMMARY, "No higher-priority autonomous action remains for the current memory state."
+
     def _build_runtime(self) -> VerifierRuntimeService:
         settings = get_settings()
         runtime = build_runtime_service(settings=settings)
@@ -193,12 +248,14 @@ class OrchestrationService:
 
         provider_key = payload.ai_provider_key or get_settings().ai_default_provider if payload.use_ai_planner else None
         session_id = f"orch-{uuid4().hex[:12]}"
+        memory = self._refresh_memory(scan_id, self._initial_memory())
         recorder = SessionRecorder(
             session_id=session_id,
             scan_id=scan_id,
             provider_key=provider_key,
             request_payload=payload.model_dump(mode="json"),
             max_verifier_cycles=payload.max_verifier_cycles,
+            initial_memory=memory,
         )
         recorder.create()
 
@@ -209,82 +266,114 @@ class OrchestrationService:
                 title="Prepare autonomous session",
                 detail="Initialized autonomous pentest session state and selected orchestration settings.",
                 payload={"scan_id": scan_id, "provider_key": provider_key},
+                memory_updates=memory,
             )
 
-            deterministic_result = planner_service.run_workflow_planner(scan_id)
-            if deterministic_result is not None:
+            runtime = self._build_runtime()
+            max_total_actions = payload.max_verifier_cycles + payload.max_planning_passes + payload.max_ai_planning_passes + 8
+            completed_cycles = 0
+            for _ in range(max_total_actions):
+                memory = self._refresh_memory(scan_id, memory)
+                memory["completed_verifier_cycles"] = completed_cycles
+                next_kind, reason = self._choose_next_action(memory, payload)
                 recorder.append_step(
-                    kind=OrchestrationStepKind.DETERMINISTIC_PLANNER,
+                    kind=OrchestrationStepKind.DECISION,
                     status=OrchestrationStepStatus.COMPLETED,
-                    title="Run deterministic planner",
-                    detail=f"Deterministic planner emitted {deterministic_result.emitted_count} paths from {deterministic_result.candidate_count} candidates.",
-                    payload=deterministic_result.model_dump(mode="json"),
-                    memory_updates={"planning_runs": [deterministic_result.planning_run_id]},
+                    title=f"Choose next action: {next_kind.value}",
+                    detail=reason,
+                    payload={"next_action": next_kind.value, "reason": reason},
+                    memory_updates={"decisions": [{"next_action": next_kind.value, "reason": reason}], "last_step_kind": next_kind.value},
                 )
 
-            if payload.use_ai_planner:
-                ai_result = planner_service.run_ai_workflow_planner(
-                    scan_id,
-                    AiPlanningRunRequest(
-                        provider_key=payload.ai_provider_key,
-                        apply=True,
-                        candidate_limit=payload.ai_candidate_limit,
-                        min_priority_score=payload.ai_min_priority_score,
-                    ),
-                )
-                if ai_result is not None:
+                if next_kind == OrchestrationStepKind.DETERMINISTIC_PLANNER:
+                    deterministic_result = planner_service.run_workflow_planner(scan_id)
+                    if deterministic_result is None:
+                        raise RuntimeError("Deterministic planner could not run for this scan.")
+                    memory = self._refresh_memory(scan_id, memory)
+                    memory["deterministic_planning_runs"] = int(memory.get("deterministic_planning_runs", 0)) + 1
+                    memory["last_deterministic_event_count"] = int(memory.get("proxy_event_count", 0))
+                    memory["last_deterministic_candidate_count"] = deterministic_result.candidate_count
+                    recorder.append_step(
+                        kind=OrchestrationStepKind.DETERMINISTIC_PLANNER,
+                        status=OrchestrationStepStatus.COMPLETED,
+                        title="Run deterministic planner",
+                        detail=f"Deterministic planner emitted {deterministic_result.emitted_count} paths from {deterministic_result.candidate_count} candidates.",
+                        payload=deterministic_result.model_dump(mode="json"),
+                        memory_updates={
+                            "planning_runs": [deterministic_result.planning_run_id],
+                            "deterministic_planning_runs": memory["deterministic_planning_runs"],
+                            "last_deterministic_event_count": memory["last_deterministic_event_count"],
+                            "last_deterministic_candidate_count": memory["last_deterministic_candidate_count"],
+                        },
+                    )
+                    continue
+
+                if next_kind == OrchestrationStepKind.AI_PLANNER:
+                    ai_result = planner_service.run_ai_workflow_planner(
+                        scan_id,
+                        AiPlanningRunRequest(
+                            provider_key=payload.ai_provider_key,
+                            apply=True,
+                            candidate_limit=payload.ai_candidate_limit,
+                            min_priority_score=payload.ai_min_priority_score,
+                        ),
+                    )
+                    if ai_result is None:
+                        raise RuntimeError("AI-assisted planner could not run for this scan.")
+                    memory = self._refresh_memory(scan_id, memory)
+                    memory["ai_planning_runs"] = int(memory.get("ai_planning_runs", 0)) + 1
+                    memory["last_ai_candidate_count"] = ai_result.candidate_count
                     recorder.append_step(
                         kind=OrchestrationStepKind.AI_PLANNER,
                         status=OrchestrationStepStatus.COMPLETED,
                         title="Run AI-assisted planner",
                         detail=f"AI planner suggested {ai_result.suggested_count} paths and emitted {ai_result.emitted_count} paths.",
                         payload=ai_result.model_dump(mode="json"),
-                        memory_updates={"planning_runs": [ai_result.planning_run_id]},
+                        memory_updates={
+                            "planning_runs": [ai_result.planning_run_id],
+                            "ai_planning_runs": memory["ai_planning_runs"],
+                            "last_ai_candidate_count": memory["last_ai_candidate_count"],
+                        },
                     )
-            else:
-                recorder.append_step(
-                    kind=OrchestrationStepKind.AI_PLANNER,
-                    status=OrchestrationStepStatus.SKIPPED,
-                    title="Skip AI-assisted planner",
-                    detail="Autonomous session skipped AI planning because it was disabled in the request.",
-                    payload={"use_ai_planner": False},
-                )
+                    continue
 
-            runtime = self._build_runtime()
-            completed_cycles = 0
-            for cycle_index in range(1, payload.max_verifier_cycles + 1):
-                processed = runtime.run_once(scan_id=scan_id)
-                if not processed:
+                if next_kind == OrchestrationStepKind.VERIFIER_CYCLE:
+                    processed = runtime.run_once(scan_id=scan_id)
+                    if not processed:
+                        recorder.append_step(
+                            kind=OrchestrationStepKind.VERIFIER_CYCLE,
+                            status=OrchestrationStepStatus.SKIPPED,
+                            title=f"Verifier cycle {completed_cycles + 1}",
+                            detail="Verifier runtime had no processable job despite pending work metadata.",
+                            payload={"cycle": completed_cycles + 1, "processed": False},
+                            completed_verifier_cycles=completed_cycles,
+                        )
+                        continue
+
+                    completed_cycles += 1
+                    memory = self._refresh_memory(scan_id, memory)
                     recorder.append_step(
                         kind=OrchestrationStepKind.VERIFIER_CYCLE,
-                        status=OrchestrationStepStatus.SKIPPED,
-                        title=f"Verifier cycle {cycle_index}",
-                        detail="No queued verifier jobs remained for this scan.",
-                        payload={"cycle": cycle_index, "processed": False},
+                        status=OrchestrationStepStatus.COMPLETED,
+                        title=f"Verifier cycle {completed_cycles}",
+                        detail="Processed one queued verifier job in the autonomous loop.",
+                        payload={"cycle": completed_cycles, "processed": True},
+                        memory_updates={"verifier_cycles": [completed_cycles]},
                         completed_verifier_cycles=completed_cycles,
                     )
-                    break
+                    continue
 
-                completed_cycles += 1
-                recorder.append_step(
-                    kind=OrchestrationStepKind.VERIFIER_CYCLE,
-                    status=OrchestrationStepStatus.COMPLETED,
-                    title=f"Verifier cycle {cycle_index}",
-                    detail="Processed one queued verifier job in the autonomous loop.",
-                    payload={"cycle": cycle_index, "processed": True},
-                    memory_updates={"verifier_cycles": [cycle_index]},
-                    completed_verifier_cycles=completed_cycles,
-                )
+                break
 
             planning_run_count = len(planner_service.list_planning_runs(scan_id))
             queued_jobs_remaining = sum(
-                1 for job in verifier_job_service.list_verifier_jobs(scan_id) if job.status in {"queued", "running"}
+                1 for job in verifier_job_service.list_verifier_jobs(scan_id) if job.status.value in {"queued", "running"}
             )
             recorder.append_step(
                 kind=OrchestrationStepKind.SUMMARY,
                 status=OrchestrationStepStatus.COMPLETED,
                 title="Finalize autonomous session",
-                detail="Autonomous pentest session completed planning and verifier replay loops.",
+                detail="Autonomous pentest session completed its dynamic planning and verifier loop.",
                 payload={
                     "planning_run_count": planning_run_count,
                     "completed_verifier_cycles": completed_cycles,

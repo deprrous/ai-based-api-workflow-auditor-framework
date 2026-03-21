@@ -25,6 +25,7 @@ class OrchestrationStepStatus(StrEnum):
 
 class OrchestrationStepKind(StrEnum):
     PREPARE = "prepare"
+    DECISION = "decision"
     DETERMINISTIC_PLANNER = "deterministic_planner"
     AI_PLANNER = "ai_planner"
     VERIFIER_CYCLE = "verifier_cycle"
@@ -34,6 +35,8 @@ class OrchestrationStepKind(StrEnum):
 class StartOrchestrationRequest(BaseModel):
     use_ai_planner: bool = True
     ai_provider_key: str | None = None
+    max_planning_passes: int = Field(default=2, ge=1, le=10)
+    max_ai_planning_passes: int = Field(default=1, ge=0, le=10)
     max_verifier_cycles: int = Field(default=10, ge=1, le=100)
     ai_candidate_limit: int = Field(default=8, ge=1, le=50)
     ai_min_priority_score: int = Field(default=50, ge=0, le=100)

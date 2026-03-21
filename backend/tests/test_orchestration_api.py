@@ -76,11 +76,13 @@ def test_orchestration_session_runs_planners_and_verifier_cycles(client):
     assert session["completed_verifier_cycles"] >= 1
     step_kinds = [step["kind"] for step in session["steps"]]
     assert step_kinds[0] == "prepare"
+    assert "decision" in step_kinds
     assert "deterministic_planner" in step_kinds
     assert "ai_planner" in step_kinds
     assert "summary" in step_kinds
     assert session["memory"]["planning_runs"]
     assert session["memory"]["verifier_cycles"]
+    assert session["memory"]["decisions"]
 
     history_response = client.get(
         f"/api/v1/scans/{scan_id}/orchestration/sessions",
