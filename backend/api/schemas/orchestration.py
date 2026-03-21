@@ -30,6 +30,8 @@ class OrchestrationStepKind(StrEnum):
     AI_PLANNER = "ai_planner"
     HYPOTHESIS_SELECTION = "hypothesis_selection"
     VERIFIER_CYCLE = "verifier_cycle"
+    REMEDIATION = "remediation"
+    REPORT = "report"
     SUMMARY = "summary"
 
 

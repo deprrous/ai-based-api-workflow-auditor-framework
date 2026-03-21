@@ -80,6 +80,8 @@ def test_orchestration_session_runs_planners_and_verifier_cycles(client):
     assert "deterministic_planner" in step_kinds
     assert "ai_planner" in step_kinds
     assert "hypothesis_selection" in step_kinds
+    assert "remediation" in step_kinds
+    assert "report" in step_kinds
     assert "summary" in step_kinds
     assert session["memory"]["planning_runs"]
     assert session["memory"]["verifier_cycles"]
@@ -87,6 +89,9 @@ def test_orchestration_session_runs_planners_and_verifier_cycles(client):
     assert isinstance(session["memory"]["candidate_backlog"], list)
     assert isinstance(session["memory"]["unresolved_hypotheses"], list)
     assert isinstance(session["memory"]["verifier_outcomes"], list)
+    assert isinstance(session["memory"]["dead_end_hypothesis_ids"], list)
+    assert isinstance(session["memory"]["recent_transitions"], list)
+    assert isinstance(session["memory"]["memory_summary"], dict)
     assert session["memory"]["last_decision_source"] in {"ai", "deterministic", "deterministic-fallback"}
 
     decision_steps = [step for step in session["steps"] if step["kind"] == "decision"]

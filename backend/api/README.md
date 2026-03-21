@@ -96,16 +96,20 @@ Autonomous sessions now persist first-class hypotheses with lifecycle states suc
 
 - `new`
 - `prioritized`
+- `downgraded`
 - `verifying`
 - `confirmed`
 - `rejected`
 - `abandoned`
+- `merged`
 
 The orchestration loop can also use the provider-neutral AI layer to:
 
 - choose the next orchestration action from memory
 - choose which unresolved hypothesis to pursue next
 - choose which verifier strategy or payload variant to try first
+
+The backend now also supports automatic hypothesis transitions from later evidence, including merge, reopen, downgrade, and abandonment behavior, plus remediation/report follow-up subloops after confirmations.
 
 Deterministic fallback remains in place so orchestration stays resilient when AI is unavailable or makes a poor choice.
 

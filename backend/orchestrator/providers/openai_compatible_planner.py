@@ -113,7 +113,7 @@ class OpenAiCompatiblePlanningProvider:
                     "content": (
                         "You choose the next action for an autonomous API security orchestration loop. "
                         "Return JSON with: next_action, confidence, rationale, supporting_observations. "
-                        "Valid next_action values are: deterministic_planner, ai_planner, verifier_cycle, summary."
+                        "Valid next_action values are: deterministic_planner, ai_planner, verifier_cycle, remediation, report, summary."
                     ),
                 },
                 {

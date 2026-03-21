@@ -29,9 +29,11 @@ from api.schemas.orchestration import (
 )
 from api.services.ai_provider_service import ai_provider_service
 from api.services.event_service import event_service
+from api.schemas.findings import FindingStatus
 from api.services.finding_service import finding_service
 from api.services.hypothesis_service import hypothesis_service
 from api.services.planner_service import planner_service
+from api.services.report_service import report_service
 from api.services.scan_service import scan_service
 from api.services.verifier_job_service import verifier_job_service
 from api.services.verifier_runtime_service import DeterministicDevVerifierExecutor, VerifierRuntimeService, build_runtime_service
@@ -190,6 +192,13 @@ class OrchestrationService:
             "candidate_backlog": [],
             "unresolved_hypotheses": [],
             "verifier_outcomes": [],
+            "dead_end_hypothesis_ids": [],
+            "recent_transitions": [],
+            "remediated_finding_ids": [],
+            "reported_finding_ids": [],
+            "remediation_backlog": [],
+            "report_backlog": [],
+            "memory_summary": {},
             "deterministic_planning_runs": 0,
             "ai_planning_runs": 0,
             "last_deterministic_event_count": 0,
@@ -220,22 +229,51 @@ class OrchestrationService:
                 "selected_payload_variant_id": hypothesis.selected_payload_variant_id,
             }
             for hypothesis in hypotheses
-            if hypothesis.status in {HypothesisStatus.NEW, HypothesisStatus.PRIORITIZED, HypothesisStatus.VERIFYING}
+            if hypothesis.status in {HypothesisStatus.NEW, HypothesisStatus.PRIORITIZED, HypothesisStatus.DOWNGRADED, HypothesisStatus.VERIFYING}
         ]
         refreshed["unresolved_hypotheses"] = [
             item for item in refreshed["candidate_backlog"] if item["status"] != HypothesisStatus.VERIFYING.value
         ]
+        refreshed["dead_end_hypothesis_ids"] = [
+            hypothesis.id
+            for hypothesis in hypotheses
+            if hypothesis.status in {HypothesisStatus.REJECTED, HypothesisStatus.ABANDONED, HypothesisStatus.MERGED}
+        ]
+        refreshed["recent_transitions"] = [
+            {
+                "hypothesis_id": hypothesis.id,
+                "status": hypothesis.status.value,
+                "reason": hypothesis.last_transition_reason,
+            }
+            for hypothesis in hypotheses
+            if hypothesis.last_transition_reason
+        ][:10]
         refreshed["verifier_outcomes"] = [
             {
                 "job_id": hypothesis.verifier_job_id,
                 "status": hypothesis.status.value,
                 "finding_id": hypothesis.finding_id,
                 "verifier_run_id": None,
-                "note": None,
+                "note": hypothesis.last_transition_reason,
             }
             for hypothesis in hypotheses
             if hypothesis.status in {HypothesisStatus.CONFIRMED, HypothesisStatus.REJECTED, HypothesisStatus.ABANDONED}
         ]
+        remediated_raw = refreshed.get("remediated_finding_ids", [])
+        reported_raw = refreshed.get("reported_finding_ids", [])
+        remediated_finding_ids = {str(item) for item in remediated_raw} if isinstance(remediated_raw, list) else set()
+        reported_finding_ids = {str(item) for item in reported_raw} if isinstance(reported_raw, list) else set()
+        confirmed_findings = [finding for finding in finding_service.list_findings(scan_id=scan_id) if finding.status == FindingStatus.CONFIRMED]
+        remediation_backlog = [finding.id for finding in confirmed_findings if finding.id not in remediated_finding_ids]
+        report_backlog = [finding.id for finding in confirmed_findings if finding.id not in reported_finding_ids]
+        refreshed["remediation_backlog"] = remediation_backlog
+        refreshed["report_backlog"] = report_backlog
+        refreshed["memory_summary"] = {
+            "candidate_backlog_count": len(refreshed["candidate_backlog"]),
+            "dead_end_count": len(refreshed["dead_end_hypothesis_ids"]),
+            "pending_verifier_jobs": refreshed["pending_verifier_jobs"],
+            "confirmed_findings_ready_for_followup": len(remediation_backlog),
+        }
         return refreshed
 
     def _deterministic_next_action(self, memory: dict[str, object], payload: StartOrchestrationRequest) -> tuple[OrchestrationStepKind, str]:
@@ -260,6 +298,14 @@ class OrchestrationService:
 
         if pending_verifier_jobs > 0 and completed_verifier_cycles < payload.max_verifier_cycles:
             return OrchestrationStepKind.VERIFIER_CYCLE, "Queued verifier jobs remain and the cycle budget allows another replay iteration."
+
+        remediation_backlog = memory.get("remediation_backlog", [])
+        if isinstance(remediation_backlog, list) and remediation_backlog:
+            return OrchestrationStepKind.REMEDIATION, "Confirmed findings have not yet been summarized into remediation guidance."
+
+        report_backlog = memory.get("report_backlog", [])
+        if isinstance(report_backlog, list) and report_backlog:
+            return OrchestrationStepKind.REPORT, "Confirmed findings have not yet been included in a session report summary."
 
         return OrchestrationStepKind.SUMMARY, "No higher-priority autonomous action remains for the current memory state."
 
@@ -299,6 +345,8 @@ class OrchestrationService:
                 AiNextAction.DETERMINISTIC_PLANNER: OrchestrationStepKind.DETERMINISTIC_PLANNER,
                 AiNextAction.AI_PLANNER: OrchestrationStepKind.AI_PLANNER,
                 AiNextAction.VERIFIER_CYCLE: OrchestrationStepKind.VERIFIER_CYCLE,
+                AiNextAction.REMEDIATION: OrchestrationStepKind.REMEDIATION,
+                AiNextAction.REPORT: OrchestrationStepKind.REPORT,
                 AiNextAction.SUMMARY: OrchestrationStepKind.SUMMARY,
             }
             return mapping[decision.next_action], {
@@ -337,7 +385,7 @@ class OrchestrationService:
 
         candidates = []
         for item in hypothesis_service.list_hypotheses(scan_id):
-            if item.status not in {HypothesisStatus.NEW, HypothesisStatus.PRIORITIZED}:
+            if item.status not in {HypothesisStatus.NEW, HypothesisStatus.PRIORITIZED, HypothesisStatus.DOWNGRADED}:
                 continue
             detail = hypothesis_service.get_hypothesis(item.id)
             if detail is None:
@@ -429,40 +477,6 @@ class OrchestrationService:
                 "supporting_observations": [f"hypothesis_id={selected_candidate.hypothesis_id}"],
             },
         )
-
-        try:
-            decision_provider_key, decision = ai_provider_service.decide_next_action(
-                AiNextActionRequest(
-                    scan_id=memory.get("scan_id", "") or provider_key or "",
-                    use_ai_planner=payload.use_ai_planner,
-                    max_planning_passes=payload.max_planning_passes,
-                    max_ai_planning_passes=payload.max_ai_planning_passes,
-                    max_verifier_cycles=payload.max_verifier_cycles,
-                    memory=self._ai_memory(memory),
-                ),
-                provider_key=provider_key,
-            )
-            mapping = {
-                AiNextAction.DETERMINISTIC_PLANNER: OrchestrationStepKind.DETERMINISTIC_PLANNER,
-                AiNextAction.AI_PLANNER: OrchestrationStepKind.AI_PLANNER,
-                AiNextAction.VERIFIER_CYCLE: OrchestrationStepKind.VERIFIER_CYCLE,
-                AiNextAction.SUMMARY: OrchestrationStepKind.SUMMARY,
-            }
-            return mapping[decision.next_action], {
-                "source": "ai",
-                "provider_key": decision_provider_key,
-                "confidence": decision.confidence,
-                "rationale": decision.rationale,
-                "supporting_observations": list(decision.supporting_observations),
-            }
-        except Exception as exc:
-            return fallback_kind, {
-                "source": "deterministic-fallback",
-                "provider_key": provider_key,
-                "confidence": 100,
-                "rationale": fallback_reason,
-                "supporting_observations": [f"ai_decision_error: {exc}"],
-            }
 
     def _build_runtime(self) -> VerifierRuntimeService:
         settings = get_settings()
@@ -663,6 +677,79 @@ class OrchestrationService:
                         payload={"cycle": completed_cycles, "processed": True},
                         memory_updates={"verifier_cycles": [completed_cycles]},
                         completed_verifier_cycles=completed_cycles,
+                    )
+                    continue
+
+                if next_kind == OrchestrationStepKind.REMEDIATION:
+                    remediation_ids_raw = memory.get("remediation_backlog", [])
+                    remediation_ids = [str(item) for item in cast(list[object], remediation_ids_raw)] if isinstance(remediation_ids_raw, list) else []
+                    existing_remediated_raw = memory.get("remediated_finding_ids", [])
+                    existing_remediated = [
+                        str(item) for item in cast(list[object], existing_remediated_raw)
+                    ] if isinstance(existing_remediated_raw, list) else []
+                    remediation_findings = [
+                        finding_service.get_finding(str(finding_id))
+                        for finding_id in remediation_ids
+                    ]
+                    remediation_findings = [finding for finding in remediation_findings if finding is not None]
+                    recorder.append_step(
+                        kind=OrchestrationStepKind.REMEDIATION,
+                        status=OrchestrationStepStatus.COMPLETED,
+                        title="Generate remediation follow-up",
+                        detail=f"Prepared remediation follow-up for {len(remediation_findings)} confirmed findings.",
+                        payload={
+                            "finding_ids": [finding.id for finding in remediation_findings],
+                            "remediations": [
+                                {
+                                    "finding_id": finding.id,
+                                    "title": finding.title,
+                                    "remediation_summary": finding.remediation_summary,
+                                }
+                                for finding in remediation_findings
+                            ],
+                        },
+                        memory_updates={
+                            "remediated_finding_ids": [finding.id for finding in remediation_findings],
+                            "notes": [f"remediation_followup={len(remediation_findings)}"],
+                        },
+                    )
+                    memory = self._refresh_memory(
+                        scan_id,
+                        {
+                            **memory,
+                            "remediated_finding_ids": [*existing_remediated, *[finding.id for finding in remediation_findings]],
+                        },
+                    )
+                    continue
+
+                if next_kind == OrchestrationStepKind.REPORT:
+                    report = report_service.get_scan_report(scan_id)
+                    report_backlog_raw = memory.get("report_backlog", [])
+                    report_backlog = [str(item) for item in cast(list[object], report_backlog_raw)] if isinstance(report_backlog_raw, list) else []
+                    existing_reported_raw = memory.get("reported_finding_ids", [])
+                    existing_reported = [
+                        str(item) for item in cast(list[object], existing_reported_raw)
+                    ] if isinstance(existing_reported_raw, list) else []
+                    recorder.append_step(
+                        kind=OrchestrationStepKind.REPORT,
+                        status=OrchestrationStepStatus.COMPLETED,
+                        title="Generate report follow-up",
+                        detail="Refreshed the autonomous session report after confirmed findings.",
+                        payload={
+                            "finding_ids": report_backlog,
+                            "report_snapshot": report.model_dump(mode="json") if report is not None else None,
+                        },
+                        memory_updates={
+                            "reported_finding_ids": report_backlog,
+                            "notes": [f"report_followup={len(report_backlog)}"],
+                        },
+                    )
+                    memory = self._refresh_memory(
+                        scan_id,
+                        {
+                            **memory,
+                            "reported_finding_ids": [*existing_reported, *report_backlog],
+                        },
                     )
                     continue
 

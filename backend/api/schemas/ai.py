@@ -83,6 +83,8 @@ class AiNextAction(StrEnum):
     DETERMINISTIC_PLANNER = "deterministic_planner"
     AI_PLANNER = "ai_planner"
     VERIFIER_CYCLE = "verifier_cycle"
+    REMEDIATION = "remediation"
+    REPORT = "report"
     SUMMARY = "summary"
 
 
@@ -117,6 +119,8 @@ class AiOrchestrationMemory(BaseModel):
     candidate_backlog: list[AiBacklogCandidate] = Field(default_factory=list)
     unresolved_hypotheses: list[AiBacklogCandidate] = Field(default_factory=list)
     verifier_outcomes: list[AiVerifierOutcome] = Field(default_factory=list)
+    remediation_backlog: list[str] = Field(default_factory=list)
+    report_backlog: list[str] = Field(default_factory=list)
 
 
 class AiNextActionRequest(BaseModel):

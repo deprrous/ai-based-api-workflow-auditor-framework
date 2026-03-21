@@ -115,6 +115,28 @@ class MockPlanningProvider:
                 ],
             )
 
+        if memory.finding_count > 0 and memory.remediation_backlog:
+            return AiNextActionDecision(
+                next_action=AiNextAction.REMEDIATION,
+                confidence=87,
+                rationale="Confirmed findings still need remediation follow-up before the session is complete.",
+                supporting_observations=[
+                    f"finding_count={memory.finding_count}",
+                    f"remediation_backlog={len(memory.remediation_backlog)}",
+                ],
+            )
+
+        if memory.finding_count > 0 and memory.report_backlog:
+            return AiNextActionDecision(
+                next_action=AiNextAction.REPORT,
+                confidence=86,
+                rationale="Confirmed findings still need report follow-up before the session is complete.",
+                supporting_observations=[
+                    f"finding_count={memory.finding_count}",
+                    f"report_backlog={len(memory.report_backlog)}",
+                ],
+            )
+
         return AiNextActionDecision(
             next_action=AiNextAction.SUMMARY,
             confidence=95,

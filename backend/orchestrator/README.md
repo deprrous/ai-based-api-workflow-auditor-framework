@@ -40,6 +40,9 @@ The backend now has a first autonomous orchestration session layer.
 - run deterministic planning
 - optionally run AI-assisted planning
 - loop verifier cycles automatically
+- maintain first-class hypotheses across cycles
+- prioritize or downgrade hypotheses as evidence changes
+- trigger remediation and report follow-up after confirmations
 - persist steps and memory snapshots for later review
 
 This is not yet a fully self-improving agent, but it is the first real persisted pentest loop instead of isolated planner or verifier calls.

@@ -396,6 +396,7 @@ def _hypothesis_record_to_summary(record: OrchestrationHypothesisRecord) -> Hypo
         session_id=record.session_id,
         planning_run_id=record.planning_run_id,
         source_path_id=record.source_path_id,
+        canonical_key=record.canonical_key,
         title=record.title,
         vulnerability_class=record.vulnerability_class,
         severity=record.severity,
@@ -410,6 +411,12 @@ def _hypothesis_record_to_summary(record: OrchestrationHypothesisRecord) -> Hypo
         decision_source=record.decision_source,
         verifier_job_id=record.verifier_job_id,
         finding_id=record.finding_id,
+        merged_into_hypothesis_id=record.merged_into_hypothesis_id,
+        attempt_count=record.attempt_count,
+        failure_count=record.failure_count,
+        reopen_count=record.reopen_count,
+        stale_cycles=record.stale_cycles,
+        last_transition_reason=record.last_transition_reason,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -431,6 +438,20 @@ def _severity_priority(severity: str) -> int:
         FindingSeverity.REVIEW.value: 2,
     }
     return order.get(severity, 99)
+
+
+def _canonical_hypothesis_key(candidate: PlannerCandidateSummary) -> str:
+    normalized_title = " ".join(candidate.title.lower().split())
+    return "|".join([candidate.vulnerability_class.value, candidate.matched_rule, normalized_title])
+
+
+def _severity_rank(severity: str) -> int:
+    order = {
+        FindingSeverity.CRITICAL.value: 3,
+        FindingSeverity.HIGH.value: 2,
+        FindingSeverity.REVIEW.value: 1,
+    }
+    return order.get(severity, 0)
 
 
 def _upsert_replay_artifact(
@@ -1653,11 +1674,22 @@ class AuditStore:
             job_repository = VerifierJobRepository(session)
             job_by_path = {job.source_path_id: job for job in job_repository.list_for_scan(scan_id)}
             now = _utc_now()
+            seen_path_ids: set[str] = set()
             results: list[HypothesisSummary] = []
             for candidate in candidates:
+                seen_path_ids.add(candidate.path_id)
+                canonical_key = _canonical_hypothesis_key(candidate)
                 record = hypothesis_repository.get_by_scan_and_path(scan_id, candidate.path_id)
+                canonical_record = hypothesis_repository.get_by_scan_and_canonical_key(scan_id, canonical_key)
+                if record is None and canonical_record is not None and canonical_record.source_path_id == candidate.path_id:
+                    record = canonical_record
                 job_record = job_by_path.get(candidate.path_id)
-                terminal_statuses = {HypothesisStatus.CONFIRMED.value, HypothesisStatus.REJECTED.value, HypothesisStatus.ABANDONED.value}
+                terminal_statuses = {
+                    HypothesisStatus.CONFIRMED.value,
+                    HypothesisStatus.REJECTED.value,
+                    HypothesisStatus.ABANDONED.value,
+                    HypothesisStatus.MERGED.value,
+                }
                 if record is None:
                     record = OrchestrationHypothesisRecord(
                         id=f"hyp-{uuid4().hex[:12]}",
@@ -1665,6 +1697,7 @@ class AuditStore:
                         session_id=session_id,
                         planning_run_id=planning_run_id,
                         source_path_id=candidate.path_id,
+                        canonical_key=canonical_key,
                         title=candidate.title,
                         vulnerability_class=candidate.vulnerability_class.value,
                         severity=candidate.severity.value,
@@ -1679,15 +1712,25 @@ class AuditStore:
                         decision_source=decision_source,
                         verifier_job_id=job_record.id if job_record is not None else None,
                         finding_id=None,
+                        merged_into_hypothesis_id=None,
+                        attempt_count=0,
+                        failure_count=0,
+                        reopen_count=0,
+                        stale_cycles=0,
+                        last_transition_reason="New hypothesis created from planner candidate.",
                         created_at=now,
                         updated_at=now,
                     )
                     hypothesis_repository.add(record)
+                    session.flush()
                 else:
                     record.session_id = session_id
                     record.planning_run_id = planning_run_id
                     record.title = candidate.title
+                    record.canonical_key = canonical_key
                     record.vulnerability_class = candidate.vulnerability_class.value
+                    previous_severity = record.severity
+                    previous_confidence = record.confidence
                     record.severity = candidate.severity.value
                     record.confidence = candidate.confidence
                     record.matched_rule = candidate.matched_rule
@@ -1696,11 +1739,53 @@ class AuditStore:
                     record.rationale = candidate.match_explanation
                     record.decision_source = decision_source
                     record.verifier_job_id = job_record.id if job_record is not None else record.verifier_job_id
+                    record.stale_cycles = 0
+                    record.merged_into_hypothesis_id = None
                     if record.status in terminal_statuses:
                         record.status = HypothesisStatus.NEW.value
                         record.finding_id = None
+                        record.reopen_count += 1
+                        record.last_transition_reason = "Hypothesis reopened after the planner rediscovered the same exploit candidate."
+                    elif _severity_rank(candidate.severity.value) < _severity_rank(previous_severity) or candidate.confidence < previous_confidence:
+                        record.status = HypothesisStatus.DOWNGRADED.value
+                        record.last_transition_reason = "Hypothesis downgraded because the latest evidence is weaker than the prior version."
+                    else:
+                        record.last_transition_reason = "Hypothesis refreshed from the latest planner evidence."
                     record.updated_at = now
+
+                canonical_group = hypothesis_repository.list_for_scan_by_canonical_key(scan_id, canonical_key)
+                if not canonical_group:
+                    canonical_group = [record]
+                keeper = record if record is not None else canonical_record
+                for sibling in canonical_group:
+                    if sibling.id == keeper.id:
+                        continue
+                    if sibling.status != HypothesisStatus.CONFIRMED.value:
+                        sibling.status = HypothesisStatus.MERGED.value
+                    sibling.merged_into_hypothesis_id = keeper.id
+                    sibling.last_transition_reason = "Merged into the stronger canonical hypothesis for the same exploit path."
+                    sibling.updated_at = now
+                    if sibling.verifier_job_id is None and keeper.verifier_job_id is not None:
+                        sibling.verifier_job_id = keeper.verifier_job_id
+                record = keeper
                 results.append(_hypothesis_record_to_summary(record))
+
+            for record in hypothesis_repository.list_for_scan(scan_id):
+                if record.source_path_id in seen_path_ids:
+                    continue
+                if record.status in {
+                    HypothesisStatus.NEW.value,
+                    HypothesisStatus.PRIORITIZED.value,
+                    HypothesisStatus.DOWNGRADED.value,
+                }:
+                    record.stale_cycles += 1
+                    if record.stale_cycles >= 2:
+                        record.status = HypothesisStatus.ABANDONED.value
+                        record.last_transition_reason = "Hypothesis abandoned after repeated planning passes failed to reproduce the path."
+                    else:
+                        record.status = HypothesisStatus.DOWNGRADED.value
+                        record.last_transition_reason = "Hypothesis downgraded because it was not reproduced in the latest planning pass."
+                    record.updated_at = now
             return results
 
     def list_hypotheses(self, scan_id: str) -> list[HypothesisSummary]:
@@ -1739,6 +1824,7 @@ class AuditStore:
             record.selected_payload_variant_id = selected_payload_variant_id
             record.selected_verifier_strategy = selected_verifier_strategy
             record.decision_source = decision_source
+            record.last_transition_reason = "Hypothesis prioritized for the next verification cycle."
             record.updated_at = _utc_now()
             return _hypothesis_record_to_detail(record)
 
@@ -1774,6 +1860,8 @@ class AuditStore:
             if hypothesis_record is not None:
                 hypothesis_record.status = HypothesisStatus.VERIFYING.value
                 hypothesis_record.verifier_job_id = record.id
+                hypothesis_record.attempt_count += 1
+                hypothesis_record.last_transition_reason = "Hypothesis moved into verifying state after a verifier job was claimed."
                 hypothesis_record.updated_at = now
 
             EventRepository(session).add(
@@ -1813,6 +1901,9 @@ class AuditStore:
                 hypothesis_record.verifier_job_id = record.id
                 hypothesis_record.finding_id = payload.finding_id
                 hypothesis_record.status = HypothesisStatus.CONFIRMED.value if payload.finding_id is not None else HypothesisStatus.REJECTED.value
+                hypothesis_record.last_transition_reason = (
+                    "Hypothesis confirmed by verifier evidence." if payload.finding_id is not None else "Hypothesis rejected because verifier replay did not confirm it."
+                )
                 hypothesis_record.updated_at = now
 
             EventRepository(session).add(
@@ -1866,7 +1957,13 @@ class AuditStore:
             hypothesis_record = HypothesisRepository(session).get_by_scan_and_path(record.scan_id, record.source_path_id)
             if hypothesis_record is not None:
                 hypothesis_record.verifier_job_id = record.id
-                hypothesis_record.status = HypothesisStatus.PRIORITIZED.value if retry_scheduled else HypothesisStatus.ABANDONED.value
+                hypothesis_record.failure_count += 1
+                hypothesis_record.status = HypothesisStatus.DOWNGRADED.value if retry_scheduled else HypothesisStatus.ABANDONED.value
+                hypothesis_record.last_transition_reason = (
+                    "Hypothesis downgraded after verifier failure but kept for retry."
+                    if retry_scheduled
+                    else "Hypothesis abandoned after verifier failure exhausted retry budget."
+                )
                 hypothesis_record.updated_at = now
 
             EventRepository(session).add(
