@@ -77,3 +77,59 @@ class AiPlanningRunResponse(BaseModel):
     skipped_existing_count: int
     apply: bool
     proposals: list[AiPlanningProposal]
+
+
+class AiNextAction(StrEnum):
+    DETERMINISTIC_PLANNER = "deterministic_planner"
+    AI_PLANNER = "ai_planner"
+    VERIFIER_CYCLE = "verifier_cycle"
+    SUMMARY = "summary"
+
+
+class AiBacklogCandidate(BaseModel):
+    path_id: str
+    title: str
+    vulnerability_class: VulnerabilityClass
+    severity: str
+    confidence: int = Field(ge=0, le=100)
+    verifier_strategy: VerifierStrategy
+    status: str
+
+
+class AiVerifierOutcome(BaseModel):
+    job_id: str
+    status: str
+    finding_id: str | None = None
+    verifier_run_id: str | None = None
+    note: str | None = None
+
+
+class AiOrchestrationMemory(BaseModel):
+    proxy_event_count: int = 0
+    finding_count: int = 0
+    pending_verifier_jobs: int = 0
+    deterministic_planning_runs: int = 0
+    ai_planning_runs: int = 0
+    last_deterministic_event_count: int = 0
+    last_deterministic_candidate_count: int = 0
+    last_ai_candidate_count: int = 0
+    completed_verifier_cycles: int = 0
+    candidate_backlog: list[AiBacklogCandidate] = Field(default_factory=list)
+    unresolved_hypotheses: list[AiBacklogCandidate] = Field(default_factory=list)
+    verifier_outcomes: list[AiVerifierOutcome] = Field(default_factory=list)
+
+
+class AiNextActionRequest(BaseModel):
+    scan_id: str
+    use_ai_planner: bool = True
+    max_planning_passes: int
+    max_ai_planning_passes: int
+    max_verifier_cycles: int
+    memory: AiOrchestrationMemory
+
+
+class AiNextActionDecision(BaseModel):
+    next_action: AiNextAction
+    confidence: int = Field(ge=0, le=100)
+    rationale: str
+    supporting_observations: list[str] = Field(default_factory=list)

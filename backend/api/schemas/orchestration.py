@@ -34,6 +34,7 @@ class OrchestrationStepKind(StrEnum):
 
 class StartOrchestrationRequest(BaseModel):
     use_ai_planner: bool = True
+    use_ai_decision: bool = True
     ai_provider_key: str | None = None
     max_planning_passes: int = Field(default=2, ge=1, le=10)
     max_ai_planning_passes: int = Field(default=1, ge=0, le=10)

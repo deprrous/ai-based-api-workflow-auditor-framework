@@ -6,7 +6,14 @@ from typing import Any, Callable
 
 import httpx
 
-from api.schemas.ai import AiCapability, AiPlanningCandidate, AiPlanningProposal, AiProviderKind
+from api.schemas.ai import (
+    AiCapability,
+    AiNextActionDecision,
+    AiNextActionRequest,
+    AiPlanningCandidate,
+    AiPlanningProposal,
+    AiProviderKind,
+)
 from orchestrator.providers.base import build_descriptor
 
 
@@ -92,3 +99,34 @@ class OpenAiCompatiblePlanningProvider:
         parsed = json.loads(content)
         proposals = parsed.get("proposals", [])
         return [AiPlanningProposal.model_validate(item) for item in proposals if isinstance(item, dict)]
+
+    def decide_next_action(self, request: AiNextActionRequest) -> AiNextActionDecision:
+        self.validate()
+        payload = {
+            "model": self.model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You choose the next action for an autonomous API security orchestration loop. "
+                        "Return JSON with: next_action, confidence, rationale, supporting_observations. "
+                        "Valid next_action values are: deterministic_planner, ai_planner, verifier_cycle, summary."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(request.model_dump(mode="json"), ensure_ascii=True),
+                },
+            ],
+        }
+        response_payload = self.transport(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            model=self.model,
+            verify_tls=self.verify_tls,
+            payload=payload,
+        )
+        content = response_payload["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        return AiNextActionDecision.model_validate(parsed)

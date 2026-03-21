@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from api.schemas.ai import AiPlanningCandidate
+from api.schemas.ai import AiNextActionRequest, AiPlanningCandidate
+from api.services.ai_provider_service import ai_provider_service
 from orchestrator.providers.openai_compatible_planner import OpenAiCompatiblePlanningProvider
 
 
@@ -66,3 +67,34 @@ def test_openai_compatible_planner_parses_structured_response() -> None:
     assert len(proposals) == 1
     assert proposals[0].priority_score == 88
     assert proposals[0].recommended_severity == "critical"
+
+
+def test_mock_provider_can_decide_next_action() -> None:
+    provider_key, decision = ai_provider_service.decide_next_action(
+        AiNextActionRequest(
+            scan_id="scan-1",
+            use_ai_planner=True,
+            max_planning_passes=2,
+            max_ai_planning_passes=1,
+            max_verifier_cycles=5,
+            memory={
+                "proxy_event_count": 5,
+                "finding_count": 0,
+                "pending_verifier_jobs": 0,
+                "deterministic_planning_runs": 0,
+                "ai_planning_runs": 0,
+                "last_deterministic_event_count": 0,
+                "last_deterministic_candidate_count": 0,
+                "last_ai_candidate_count": 0,
+                "completed_verifier_cycles": 0,
+                "candidate_backlog": [],
+                "unresolved_hypotheses": [],
+                "verifier_outcomes": [],
+            },
+        ),
+        provider_key="mock",
+    )
+
+    assert provider_key == "mock"
+    assert decision.next_action == "deterministic_planner"
+    assert decision.confidence >= 0

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from api.schemas.ai import AiCapability, AiPlanningCandidate, AiPlanningProposal, AiProviderKind
+from api.schemas.ai import (
+    AiCapability,
+    AiNextAction,
+    AiNextActionDecision,
+    AiNextActionRequest,
+    AiPlanningCandidate,
+    AiPlanningProposal,
+    AiProviderKind,
+)
 from orchestrator.providers.base import build_descriptor
 
 
@@ -65,3 +73,52 @@ class MockPlanningProvider:
             )
 
         return sorted(proposals, key=lambda item: (item.priority_score, item.path_id), reverse=True)
+
+    def decide_next_action(self, request: AiNextActionRequest) -> AiNextActionDecision:
+        memory = request.memory
+        if memory.proxy_event_count > memory.last_deterministic_event_count and memory.deterministic_planning_runs < request.max_planning_passes:
+            return AiNextActionDecision(
+                next_action=AiNextAction.DETERMINISTIC_PLANNER,
+                confidence=88,
+                rationale="New runtime observations arrived after the last deterministic planning pass.",
+                supporting_observations=[
+                    f"proxy_event_count={memory.proxy_event_count}",
+                    f"last_deterministic_event_count={memory.last_deterministic_event_count}",
+                ],
+            )
+
+        if (
+            request.use_ai_planner
+            and memory.last_deterministic_candidate_count > memory.last_ai_candidate_count
+            and memory.ai_planning_runs < request.max_ai_planning_passes
+        ):
+            return AiNextActionDecision(
+                next_action=AiNextAction.AI_PLANNER,
+                confidence=82,
+                rationale="Deterministic planning produced new backlog that has not yet been prioritized by AI assistance.",
+                supporting_observations=[
+                    f"last_deterministic_candidate_count={memory.last_deterministic_candidate_count}",
+                    f"last_ai_candidate_count={memory.last_ai_candidate_count}",
+                ],
+            )
+
+        if memory.pending_verifier_jobs > 0 and memory.completed_verifier_cycles < request.max_verifier_cycles:
+            return AiNextActionDecision(
+                next_action=AiNextAction.VERIFIER_CYCLE,
+                confidence=90,
+                rationale="Queued verifier work remains and replay confirmation should continue before declaring the session complete.",
+                supporting_observations=[
+                    f"pending_verifier_jobs={memory.pending_verifier_jobs}",
+                    f"completed_verifier_cycles={memory.completed_verifier_cycles}",
+                ],
+            )
+
+        return AiNextActionDecision(
+            next_action=AiNextAction.SUMMARY,
+            confidence=95,
+            rationale="No higher-priority action remains in memory, so the autonomous session can summarize current results.",
+            supporting_observations=[
+                f"candidate_backlog={len(memory.candidate_backlog)}",
+                f"pending_verifier_jobs={memory.pending_verifier_jobs}",
+            ],
+        )

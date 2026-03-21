@@ -3,7 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from api.schemas.ai import AiCapability, AiPlanningCandidate, AiPlanningProposal, AiProviderDescriptor, AiProviderKind
+from api.schemas.ai import (
+    AiCapability,
+    AiNextActionDecision,
+    AiNextActionRequest,
+    AiPlanningCandidate,
+    AiPlanningProposal,
+    AiProviderDescriptor,
+    AiProviderKind,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +27,8 @@ class AiProvider(Protocol):
 
 class AiPlanningProvider(AiProvider, Protocol):
     def plan(self, candidates: list[AiPlanningCandidate], *, min_priority_score: int) -> list[AiPlanningProposal]: ...
+
+    def decide_next_action(self, request: AiNextActionRequest) -> AiNextActionDecision: ...
 
 
 def build_descriptor(

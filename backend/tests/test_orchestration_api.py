@@ -83,6 +83,15 @@ def test_orchestration_session_runs_planners_and_verifier_cycles(client):
     assert session["memory"]["planning_runs"]
     assert session["memory"]["verifier_cycles"]
     assert session["memory"]["decisions"]
+    assert isinstance(session["memory"]["candidate_backlog"], list)
+    assert isinstance(session["memory"]["unresolved_hypotheses"], list)
+    assert isinstance(session["memory"]["verifier_outcomes"], list)
+    assert session["memory"]["last_decision_source"] in {"ai", "deterministic", "deterministic-fallback"}
+
+    decision_steps = [step for step in session["steps"] if step["kind"] == "decision"]
+    assert decision_steps
+    assert decision_steps[0]["payload"]["source"] in {"ai", "deterministic", "deterministic-fallback"}
+    assert "confidence" in decision_steps[0]["payload"]
 
     history_response = client.get(
         f"/api/v1/scans/{scan_id}/orchestration/sessions",

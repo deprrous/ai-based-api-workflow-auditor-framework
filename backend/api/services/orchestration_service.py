@@ -7,7 +7,7 @@ from uuid import uuid4
 from api.app.database import session_scope
 from api.app.db_models import OrchestrationSessionRecord, OrchestrationStepRecord
 from api.repositories.orchestration_repository import OrchestrationRepository
-from api.schemas.ai import AiPlanningRunRequest
+from api.schemas.ai import AiNextAction, AiNextActionRequest, AiOrchestrationMemory, AiPlanningRunRequest
 from api.schemas.orchestration import (
     OrchestrationMode,
     OrchestrationSessionDetail,
@@ -18,6 +18,7 @@ from api.schemas.orchestration import (
     OrchestrationStepStatus,
     StartOrchestrationRequest,
 )
+from api.services.ai_provider_service import ai_provider_service
 from api.services.event_service import event_service
 from api.services.finding_service import finding_service
 from api.services.planner_service import planner_service
@@ -29,6 +30,15 @@ from api.app.config import get_settings
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _memory_int(memory: dict[str, object], key: str) -> int:
+    value = memory.get(key, 0)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
 
 
 def _session_record_to_summary(record: OrchestrationSessionRecord) -> OrchestrationSessionSummary:
@@ -167,12 +177,16 @@ class OrchestrationService:
             "proxy_event_count": 0,
             "finding_count": 0,
             "pending_verifier_jobs": 0,
+            "candidate_backlog": [],
+            "unresolved_hypotheses": [],
+            "verifier_outcomes": [],
             "deterministic_planning_runs": 0,
             "ai_planning_runs": 0,
             "last_deterministic_event_count": 0,
             "last_deterministic_candidate_count": 0,
             "last_ai_candidate_count": 0,
             "last_step_kind": None,
+            "last_decision_source": None,
         }
 
     def _refresh_memory(self, scan_id: str, memory: dict[str, object]) -> dict[str, object]:
@@ -180,20 +194,45 @@ class OrchestrationService:
         events = event_service.list_scan_events(scan_id, limit=1000)
         refreshed["proxy_event_count"] = sum(1 for event in events if event.event_type == "proxy.http_observed")
         refreshed["finding_count"] = len(finding_service.list_findings(scan_id=scan_id))
-        refreshed["pending_verifier_jobs"] = sum(
-            1 for job in verifier_job_service.list_verifier_jobs(scan_id) if job.status.value in {"queued", "running"}
-        )
+        job_summaries = verifier_job_service.list_verifier_jobs(scan_id)
+        refreshed["pending_verifier_jobs"] = sum(1 for job in job_summaries if job.status.value in {"queued", "running"})
+        refreshed["candidate_backlog"] = [
+            {
+                "path_id": detail.source_path_id,
+                "title": detail.title,
+                "vulnerability_class": detail.payload.vulnerability_class,
+                "severity": detail.severity.value,
+                "confidence": detail.payload.confidence,
+                "verifier_strategy": detail.payload.verifier_strategy,
+                "status": detail.status.value,
+            }
+            for job in job_summaries
+            if job.status.value in {"queued", "running"}
+            if (detail := verifier_job_service.get_verifier_job(job.id)) is not None
+        ]
+        refreshed["unresolved_hypotheses"] = list(refreshed["candidate_backlog"])
+        refreshed["verifier_outcomes"] = [
+            {
+                "job_id": job.id,
+                "status": job.status.value,
+                "finding_id": job.finding_id,
+                "verifier_run_id": job.verifier_run_id,
+                "note": job.last_error,
+            }
+            for job in job_summaries
+            if job.status.value in {"succeeded", "failed", "cancelled"}
+        ]
         return refreshed
 
-    def _choose_next_action(self, memory: dict[str, object], payload: StartOrchestrationRequest) -> tuple[OrchestrationStepKind, str]:
-        proxy_event_count = int(memory.get("proxy_event_count", 0))
-        last_deterministic_event_count = int(memory.get("last_deterministic_event_count", 0))
-        deterministic_planning_runs = int(memory.get("deterministic_planning_runs", 0))
-        ai_planning_runs = int(memory.get("ai_planning_runs", 0))
-        last_deterministic_candidate_count = int(memory.get("last_deterministic_candidate_count", 0))
-        last_ai_candidate_count = int(memory.get("last_ai_candidate_count", 0))
-        pending_verifier_jobs = int(memory.get("pending_verifier_jobs", 0))
-        completed_verifier_cycles = int(memory.get("completed_verifier_cycles", 0))
+    def _deterministic_next_action(self, memory: dict[str, object], payload: StartOrchestrationRequest) -> tuple[OrchestrationStepKind, str]:
+        proxy_event_count = _memory_int(memory, "proxy_event_count")
+        last_deterministic_event_count = _memory_int(memory, "last_deterministic_event_count")
+        deterministic_planning_runs = _memory_int(memory, "deterministic_planning_runs")
+        ai_planning_runs = _memory_int(memory, "ai_planning_runs")
+        last_deterministic_candidate_count = _memory_int(memory, "last_deterministic_candidate_count")
+        last_ai_candidate_count = _memory_int(memory, "last_ai_candidate_count")
+        pending_verifier_jobs = _memory_int(memory, "pending_verifier_jobs")
+        completed_verifier_cycles = _memory_int(memory, "completed_verifier_cycles")
 
         if proxy_event_count > last_deterministic_event_count and deterministic_planning_runs < payload.max_planning_passes:
             return OrchestrationStepKind.DETERMINISTIC_PLANNER, "New proxy observations are available and have not yet been re-planned."
@@ -209,6 +248,60 @@ class OrchestrationService:
             return OrchestrationStepKind.VERIFIER_CYCLE, "Queued verifier jobs remain and the cycle budget allows another replay iteration."
 
         return OrchestrationStepKind.SUMMARY, "No higher-priority autonomous action remains for the current memory state."
+
+    def _ai_memory(self, memory: dict[str, object]) -> AiOrchestrationMemory:
+        return AiOrchestrationMemory.model_validate(memory)
+
+    def _choose_next_action(
+        self,
+        *,
+        provider_key: str | None,
+        memory: dict[str, object],
+        payload: StartOrchestrationRequest,
+    ) -> tuple[OrchestrationStepKind, dict[str, object]]:
+        fallback_kind, fallback_reason = self._deterministic_next_action(memory, payload)
+        if not payload.use_ai_decision:
+            return fallback_kind, {
+                "source": "deterministic",
+                "provider_key": None,
+                "confidence": 100,
+                "rationale": fallback_reason,
+                "supporting_observations": [],
+            }
+
+        try:
+            decision_provider_key, decision = ai_provider_service.decide_next_action(
+                AiNextActionRequest(
+                    scan_id=memory.get("scan_id", "") or provider_key or "",
+                    use_ai_planner=payload.use_ai_planner,
+                    max_planning_passes=payload.max_planning_passes,
+                    max_ai_planning_passes=payload.max_ai_planning_passes,
+                    max_verifier_cycles=payload.max_verifier_cycles,
+                    memory=self._ai_memory(memory),
+                ),
+                provider_key=provider_key,
+            )
+            mapping = {
+                AiNextAction.DETERMINISTIC_PLANNER: OrchestrationStepKind.DETERMINISTIC_PLANNER,
+                AiNextAction.AI_PLANNER: OrchestrationStepKind.AI_PLANNER,
+                AiNextAction.VERIFIER_CYCLE: OrchestrationStepKind.VERIFIER_CYCLE,
+                AiNextAction.SUMMARY: OrchestrationStepKind.SUMMARY,
+            }
+            return mapping[decision.next_action], {
+                "source": "ai",
+                "provider_key": decision_provider_key,
+                "confidence": decision.confidence,
+                "rationale": decision.rationale,
+                "supporting_observations": list(decision.supporting_observations),
+            }
+        except Exception as exc:
+            return fallback_kind, {
+                "source": "deterministic-fallback",
+                "provider_key": provider_key,
+                "confidence": 100,
+                "rationale": fallback_reason,
+                "supporting_observations": [f"ai_decision_error: {exc}"],
+            }
 
     def _build_runtime(self) -> VerifierRuntimeService:
         settings = get_settings()
@@ -248,7 +341,7 @@ class OrchestrationService:
 
         provider_key = payload.ai_provider_key or get_settings().ai_default_provider if payload.use_ai_planner else None
         session_id = f"orch-{uuid4().hex[:12]}"
-        memory = self._refresh_memory(scan_id, self._initial_memory())
+        memory = self._refresh_memory(scan_id, {**self._initial_memory(), "scan_id": scan_id})
         recorder = SessionRecorder(
             session_id=session_id,
             scan_id=scan_id,
@@ -275,14 +368,22 @@ class OrchestrationService:
             for _ in range(max_total_actions):
                 memory = self._refresh_memory(scan_id, memory)
                 memory["completed_verifier_cycles"] = completed_cycles
-                next_kind, reason = self._choose_next_action(memory, payload)
+                next_kind, decision_meta = self._choose_next_action(
+                    provider_key=provider_key,
+                    memory=memory,
+                    payload=payload,
+                )
                 recorder.append_step(
                     kind=OrchestrationStepKind.DECISION,
                     status=OrchestrationStepStatus.COMPLETED,
                     title=f"Choose next action: {next_kind.value}",
-                    detail=reason,
-                    payload={"next_action": next_kind.value, "reason": reason},
-                    memory_updates={"decisions": [{"next_action": next_kind.value, "reason": reason}], "last_step_kind": next_kind.value},
+                    detail=str(decision_meta["rationale"]),
+                    payload={"next_action": next_kind.value, **decision_meta},
+                    memory_updates={
+                        "decisions": [{"next_action": next_kind.value, **decision_meta}],
+                        "last_step_kind": next_kind.value,
+                        "last_decision_source": decision_meta["source"],
+                    },
                 )
 
                 if next_kind == OrchestrationStepKind.DETERMINISTIC_PLANNER:
@@ -290,8 +391,8 @@ class OrchestrationService:
                     if deterministic_result is None:
                         raise RuntimeError("Deterministic planner could not run for this scan.")
                     memory = self._refresh_memory(scan_id, memory)
-                    memory["deterministic_planning_runs"] = int(memory.get("deterministic_planning_runs", 0)) + 1
-                    memory["last_deterministic_event_count"] = int(memory.get("proxy_event_count", 0))
+                    memory["deterministic_planning_runs"] = _memory_int(memory, "deterministic_planning_runs") + 1
+                    memory["last_deterministic_event_count"] = _memory_int(memory, "proxy_event_count")
                     memory["last_deterministic_candidate_count"] = deterministic_result.candidate_count
                     recorder.append_step(
                         kind=OrchestrationStepKind.DETERMINISTIC_PLANNER,
@@ -321,7 +422,7 @@ class OrchestrationService:
                     if ai_result is None:
                         raise RuntimeError("AI-assisted planner could not run for this scan.")
                     memory = self._refresh_memory(scan_id, memory)
-                    memory["ai_planning_runs"] = int(memory.get("ai_planning_runs", 0)) + 1
+                    memory["ai_planning_runs"] = _memory_int(memory, "ai_planning_runs") + 1
                     memory["last_ai_candidate_count"] = ai_result.candidate_count
                     recorder.append_step(
                         kind=OrchestrationStepKind.AI_PLANNER,
