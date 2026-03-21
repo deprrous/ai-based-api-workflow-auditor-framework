@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
@@ -46,3 +47,35 @@ class ScanEvidenceBundle(BaseModel):
     scan: ScanRunSummary
     findings: list[FindingDetail]
     total_evidence_items: int
+
+
+class FindingDriftKind(StrEnum):
+    NEW = "new"
+    RESOLVED = "resolved"
+    CHANGED = "changed"
+    UNCHANGED = "unchanged"
+
+
+class FindingComparisonEntry(BaseModel):
+    kind: FindingDriftKind
+    comparison_key: str
+    baseline_finding: FindingSummary | None = None
+    current_finding: FindingSummary | None = None
+    changed_fields: list[str] = Field(default_factory=list)
+
+
+class ScanComparisonSummary(BaseModel):
+    baseline_scan_id: str
+    current_scan_id: str
+    new_findings: int
+    resolved_findings: int
+    changed_findings: int
+    unchanged_findings: int
+
+
+class ScanComparisonReport(BaseModel):
+    generated_at: datetime
+    baseline_scan: ScanRunSummary
+    current_scan: ScanRunSummary
+    summary: ScanComparisonSummary
+    comparisons: list[FindingComparisonEntry]

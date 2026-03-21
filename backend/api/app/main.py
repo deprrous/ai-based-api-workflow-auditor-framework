@@ -92,6 +92,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix=settings.api_prefix)
     app.include_router(ai.router, prefix=settings.api_prefix)
+    app.include_router(reports.router, prefix=settings.api_prefix)
     app.include_router(scans.router, prefix=settings.api_prefix)
     app.include_router(artifacts.router, prefix=settings.api_prefix)
     app.include_router(callbacks.router, prefix=settings.api_prefix)
@@ -99,7 +100,6 @@ def create_app() -> FastAPI:
     app.include_router(findings.router, prefix=settings.api_prefix)
     app.include_router(planner.router, prefix=settings.api_prefix)
     app.include_router(replay_artifacts.router, prefix=settings.api_prefix)
-    app.include_router(reports.router, prefix=settings.api_prefix)
     app.include_router(service_accounts.router, prefix=settings.api_prefix)
     app.include_router(verifier_jobs.router, prefix=settings.api_prefix)
     app.include_router(verifier_runs.router, prefix=settings.api_prefix)

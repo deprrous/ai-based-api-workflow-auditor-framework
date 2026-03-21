@@ -22,6 +22,95 @@ def test_scan_report_and_evidence_bundle_return_seeded_backend_data(client):
     assert bundle["total_evidence_items"] == 4
 
 
+def test_scan_comparison_reports_new_resolved_and_changed_findings(client):
+    create_response = client.post(
+        "/api/v1/scans",
+        json={"name": "Current Comparison Scan", "target": "qa", "notes": "comparison"},
+    )
+    assert create_response.status_code == 202
+    current_scan_id = create_response.json()["run"]["id"]
+
+    ingest_response = client.post(
+        f"/api/v1/scans/{current_scan_id}/events",
+        headers={"X-Auditor-Ingest-Token": "test-ingest-token"},
+        json={
+            "source": "verifier",
+            "event_type": "finding_confirmed",
+            "stage": "reporting",
+            "severity": "critical",
+            "message": "Confirmed comparison findings.",
+            "finding_updates": [
+                    {
+                        "id": "finding-current-bola-read-updated",
+                        "title": "Cross-tenant invoice read via direct object reference",
+                    "category": "bola",
+                    "severity": "critical",
+                    "status": "confirmed",
+                    "confidence": 99,
+                    "endpoint": "GET /v1/invoices/{invoiceId}",
+                    "actor": "second-tenant user",
+                    "impact_summary": "Updated confidence summary.",
+                    "remediation_summary": "Updated remediation summary.",
+                    "description": "Updated finding description.",
+                    "impact": "Updated impact.",
+                    "remediation": "Updated remediation.",
+                    "evidence": [
+                        {
+                            "label": "Updated verifier replay",
+                            "detail": "Updated evidence for comparison drift.",
+                            "source": "verifier",
+                        }
+                    ],
+                    "context_references": [],
+                    "workflow_node_ids": ["invoice-detail"],
+                    "tags": ["bola"],
+                },
+                {
+                    "id": "finding-current-new-ssrf",
+                    "title": "Callback import path can reach internal metadata target",
+                    "category": "ssrf",
+                    "severity": "high",
+                    "status": "confirmed",
+                    "confidence": 91,
+                    "endpoint": "POST /v1/imports",
+                    "actor": "partner-member",
+                    "impact_summary": "New SSRF finding.",
+                    "remediation_summary": "Restrict outbound requests.",
+                    "description": "New SSRF description.",
+                    "impact": "New SSRF impact.",
+                    "remediation": "New SSRF remediation.",
+                    "evidence": [
+                        {
+                            "label": "OOB callback",
+                            "detail": "Metadata callback observed.",
+                            "source": "verifier",
+                        }
+                    ],
+                    "context_references": [],
+                    "workflow_node_ids": ["imports"],
+                    "tags": ["ssrf"],
+                },
+            ],
+        },
+    )
+    assert ingest_response.status_code == 202
+
+    comparison_response = client.get(
+        "/api/v1/scans/compare",
+        params={"baseline_scan_id": "bootstrap-scan", "current_scan_id": current_scan_id},
+    )
+    assert comparison_response.status_code == 200
+    comparison = comparison_response.json()
+
+    assert comparison["summary"]["new_findings"] == 1
+    assert comparison["summary"]["resolved_findings"] == 2
+    assert comparison["summary"]["changed_findings"] == 1
+    assert comparison["summary"]["unchanged_findings"] == 0
+
+    kinds = {entry["kind"] for entry in comparison["comparisons"]}
+    assert {"new", "resolved", "changed"}.issubset(kinds)
+
+
 def test_service_account_lifecycle_can_secure_worker_ingest(client):
     create_response = client.post(
         "/api/v1/service-accounts",

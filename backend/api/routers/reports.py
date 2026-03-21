@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
-from api.schemas.reports import ScanEvidenceBundle, ScanReport
+from api.schemas.reports import ScanComparisonReport, ScanEvidenceBundle, ScanReport
 from api.services.report_service import report_service
 
 router = APIRouter(prefix="/scans", tags=["reports"])
@@ -24,3 +24,15 @@ async def get_scan_evidence_bundle(scan_id: str) -> ScanEvidenceBundle:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence bundle not found.")
 
     return bundle
+
+
+@router.get("/compare", response_model=ScanComparisonReport, summary="Compare findings between two scans")
+async def compare_scans(
+    baseline_scan_id: str = Query(description="Baseline scan identifier."),
+    current_scan_id: str = Query(description="Current scan identifier."),
+) -> ScanComparisonReport:
+    comparison = report_service.compare_scans(baseline_scan_id, current_scan_id)
+    if comparison is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or both scan runs were not found.")
+
+    return comparison

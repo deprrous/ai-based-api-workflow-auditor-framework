@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from api.schemas.findings import FindingSeverity, FindingStatus
-from api.schemas.reports import ScanEvidenceBundle, ScanReport, SeverityBreakdown, StatusBreakdown, WorkflowReportSummary
+from api.schemas.reports import (
+    FindingComparisonEntry,
+    FindingDriftKind,
+    ScanComparisonReport,
+    ScanComparisonSummary,
+    ScanEvidenceBundle,
+    ScanReport,
+    SeverityBreakdown,
+    StatusBreakdown,
+    WorkflowReportSummary,
+)
 from api.services.event_service import event_service
 from api.services.finding_service import finding_service
 from api.services.scan_service import scan_service
@@ -70,6 +80,81 @@ class ReportService:
             scan=scan,
             findings=findings,
             total_evidence_items=sum(len(finding.evidence) for finding in findings),
+        )
+
+    def compare_scans(self, baseline_scan_id: str, current_scan_id: str) -> ScanComparisonReport | None:
+        baseline_scan = scan_service.get_scan(baseline_scan_id)
+        current_scan = scan_service.get_scan(current_scan_id)
+        if baseline_scan is None or current_scan is None:
+            return None
+
+        baseline_findings = finding_service.list_findings(scan_id=baseline_scan_id)
+        current_findings = finding_service.list_findings(scan_id=current_scan_id)
+
+        def comparison_key(finding) -> str:
+            return "|".join([finding.category, finding.endpoint or "", finding.title])
+
+        baseline_map = {comparison_key(finding): finding for finding in baseline_findings}
+        current_map = {comparison_key(finding): finding for finding in current_findings}
+        all_keys = sorted(set(baseline_map) | set(current_map))
+
+        comparisons: list[FindingComparisonEntry] = []
+        counts = {
+            FindingDriftKind.NEW: 0,
+            FindingDriftKind.RESOLVED: 0,
+            FindingDriftKind.CHANGED: 0,
+            FindingDriftKind.UNCHANGED: 0,
+        }
+
+        for key in all_keys:
+            baseline = baseline_map.get(key)
+            current = current_map.get(key)
+            if baseline is None and current is not None:
+                kind = FindingDriftKind.NEW
+                changed_fields: list[str] = []
+            elif current is None and baseline is not None:
+                kind = FindingDriftKind.RESOLVED
+                changed_fields = []
+            elif baseline is not None and current is not None:
+                changed_fields = []
+                if baseline.severity != current.severity:
+                    changed_fields.append("severity")
+                if baseline.status != current.status:
+                    changed_fields.append("status")
+                if baseline.confidence != current.confidence:
+                    changed_fields.append("confidence")
+                if baseline.evidence_count != current.evidence_count:
+                    changed_fields.append("evidence_count")
+                if baseline.context_reference_count != current.context_reference_count:
+                    changed_fields.append("context_reference_count")
+                kind = FindingDriftKind.CHANGED if changed_fields else FindingDriftKind.UNCHANGED
+            else:
+                continue
+
+            counts[kind] += 1
+            comparisons.append(
+                FindingComparisonEntry(
+                    kind=kind,
+                    comparison_key=key,
+                    baseline_finding=baseline,
+                    current_finding=current,
+                    changed_fields=changed_fields,
+                )
+            )
+
+        return ScanComparisonReport(
+            generated_at=_utc_now(),
+            baseline_scan=baseline_scan,
+            current_scan=current_scan,
+            summary=ScanComparisonSummary(
+                baseline_scan_id=baseline_scan_id,
+                current_scan_id=current_scan_id,
+                new_findings=counts[FindingDriftKind.NEW],
+                resolved_findings=counts[FindingDriftKind.RESOLVED],
+                changed_findings=counts[FindingDriftKind.CHANGED],
+                unchanged_findings=counts[FindingDriftKind.UNCHANGED],
+            ),
+            comparisons=comparisons,
         )
 
 
