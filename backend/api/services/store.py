@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from api.app.config import get_settings
 from api.app.database import session_scope
-from api.app.db_models import CallbackEventRecord, CallbackExpectationRecord, FindingRecord, OrchestrationHypothesisRecord, PlanningRunRecord, ReplayArtifactRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
+from api.app.db_models import CallbackEventRecord, CallbackExpectationRecord, FindingRecord, OrchestrationHypothesisRecord, PlanningRunRecord, ReplayArtifactRecord, ScanActorProfileRecord, ScanEventRecord, ScanRunRecord, VerifierJobRecord, VerifierRunRecord, WorkflowGraphRecord
 from api.repositories.callback_repository import CallbackRepository
 from api.repositories.event_repository import EventRepository
 from api.repositories.finding_repository import FindingRepository
@@ -16,6 +16,7 @@ from api.repositories.hypothesis_repository import HypothesisRepository
 from api.repositories.planning_run_repository import PlanningRunRepository
 from api.repositories.replay_artifact_repository import ReplayArtifactRepository
 from api.repositories.scan_repository import ScanRepository
+from api.repositories.scan_actor_profile_repository import ScanActorProfileRepository
 from api.repositories.verifier_job_repository import VerifierJobRepository
 from api.repositories.verifier_run_repository import VerifierRunRepository
 from api.repositories.workflow_repository import WorkflowRepository
@@ -39,8 +40,9 @@ from api.schemas.producer_contracts import ProxyHttpObservedContract, VerifierFi
 from api.schemas.planner import PlannerCandidateSummary, VerifierStrategy
 from api.schemas.planning_runs import PlanningMode, PlanningRunDetail, PlanningRunSummary
 from api.schemas.replay_artifacts import ReplayArtifactDetail, ReplayArtifactMaterial
+from api.schemas.scan_setup import ScanActorProfileDetail, ScanActorProfileInput
 from api.services.replay_artifact_policy import redact_headers, redact_response_excerpt
-from api.schemas.scans import ScanRisk, ScanRunSummary, ScanStatus, StartScanRequest
+from api.schemas.scans import ScanRisk, ScanRunSummary, ScanRuntimeConfig, ScanStatus, StartScanRequest
 from api.schemas.verifier_jobs import (
     ClaimVerifierJobRequest,
     CompleteVerifierJobRequest,
@@ -138,6 +140,7 @@ def _scan_record_to_model(record: ScanRunRecord) -> ScanRunSummary:
         name=record.name,
         status=ScanStatus(record.status),
         target=record.target,
+        target_base_url=record.target_base_url,
         created_at=record.created_at,
         current_stage=record.current_stage,
         findings_count=record.findings_count,
@@ -255,6 +258,17 @@ def _callback_expectation_record_to_detail(
     return CallbackExpectationDetail(
         **summary.model_dump(),
         events=[_callback_event_record_to_detail(event) for event in events],
+    )
+
+
+def _actor_profile_record_to_detail(record: ScanActorProfileRecord) -> ScanActorProfileDetail:
+    return ScanActorProfileDetail(
+        id=record.id,
+        scan_id=record.scan_id,
+        actor_id=record.actor_id,
+        label=record.label,
+        description=record.description,
+        headers=dict(record.headers_json),
     )
 
 
@@ -1231,6 +1245,7 @@ class AuditStore:
                 name="Tenant Billing Workflow Audit",
                 status=ScanStatus.COMPLETED.value,
                 target="staging",
+                target_base_url="https://staging.example.internal",
                 created_at=datetime(2026, 3, 19, 0, 0, tzinfo=timezone.utc),
                 updated_at=datetime(2026, 3, 19, 0, 25, tzinfo=timezone.utc),
                 current_stage="reporting",
@@ -1258,6 +1273,7 @@ class AuditStore:
                 name="Partner Project Boundary Audit",
                 status=ScanStatus.RUNNING.value,
                 target="qa",
+                target_base_url="https://qa.example.internal",
                 created_at=datetime(2026, 3, 19, 1, 30, tzinfo=timezone.utc),
                 updated_at=datetime(2026, 3, 19, 1, 46, tzinfo=timezone.utc),
                 current_stage="observation",
@@ -1352,6 +1368,52 @@ class AuditStore:
             record = ScanRepository(session).get(scan_id)
             return _scan_record_to_model(record) if record else None
 
+    def list_scan_actor_profiles(self, scan_id: str) -> list[ScanActorProfileDetail]:
+        with session_scope() as session:
+            records = ScanActorProfileRepository(session).list_for_scan(scan_id)
+            return [_actor_profile_record_to_detail(record) for record in records]
+
+    def upsert_scan_actor_profiles(self, scan_id: str, profiles: list[ScanActorProfileInput]) -> list[ScanActorProfileDetail]:
+        with session_scope() as session:
+            if ScanRepository(session).get(scan_id) is None:
+                return []
+            repository = ScanActorProfileRepository(session)
+            now = _utc_now()
+            results: list[ScanActorProfileDetail] = []
+            for profile in profiles:
+                record = repository.get_by_scan_and_actor_id(scan_id, profile.actor_id)
+                if record is None:
+                    record = ScanActorProfileRecord(
+                        id=f"actor-{uuid4().hex[:12]}",
+                        scan_id=scan_id,
+                        actor_id=profile.actor_id,
+                        label=profile.label,
+                        description=profile.description,
+                        headers_json=dict(profile.headers),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    repository.add(record)
+                else:
+                    record.label = profile.label
+                    record.description = profile.description
+                    record.headers_json = dict(profile.headers)
+                    record.updated_at = now
+                results.append(_actor_profile_record_to_detail(record))
+            return results
+
+    def get_scan_runtime_config(self, scan_id: str) -> ScanRuntimeConfig | None:
+        with session_scope() as session:
+            scan_record = ScanRepository(session).get(scan_id)
+            if scan_record is None:
+                return None
+            profiles = ScanActorProfileRepository(session).list_for_scan(scan_id)
+            return ScanRuntimeConfig(
+                scan_id=scan_id,
+                target_base_url=scan_record.target_base_url,
+                actor_headers={record.actor_id: dict(record.headers_json) for record in profiles},
+            )
+
     def start_scan(self, payload: StartScanRequest) -> ScanRunSummary:
         scan_id = f"scan-{uuid4().hex[:8]}"
         workflow_id = f"workflow-{scan_id}"
@@ -1369,6 +1431,7 @@ class AuditStore:
                 name=payload.name,
                 status=ScanStatus.QUEUED.value,
                 target=payload.target,
+                target_base_url=payload.target_base_url,
                 created_at=now,
                 updated_at=now,
                 current_stage="ingestion",

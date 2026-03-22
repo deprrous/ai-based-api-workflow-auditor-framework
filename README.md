@@ -14,6 +14,7 @@ Architecture-first repository for an agentic AI API auditing framework focused o
 - `GET /api/v1/scans/{scan_id}`
 - `GET /api/v1/scans/{scan_id}/events`
 - `GET /api/v1/scans/{scan_id}/events/stream`
+- `GET /api/v1/scans/{scan_id}/actors`
 - `GET /api/v1/scans/{scan_id}/findings`
 - `GET /api/v1/scans/{scan_id}/report`
 - `GET /api/v1/scans/{scan_id}/evidence-bundle`
@@ -25,6 +26,7 @@ Architecture-first repository for an agentic AI API auditing framework focused o
 - `POST /api/v1/scans/{scan_id}/events`
 - `GET /api/v1/scans/{scan_id}/workflow`
 - `POST /api/v1/scans`
+- `POST /api/v1/scans/setup`
 - `GET /api/v1/contracts/runtime-ingest`
 - `GET /api/v1/findings`
 - `GET /api/v1/findings/{finding_id}`
@@ -130,6 +132,8 @@ The verifier now also supports out-of-band callback confirmation paths and taint
 It now also has headless-browser execution hooks for DOM/XSS-style verification on top of HTTP replay.
 
 The backend now also has a first autonomous pentest orchestration session layer that can plan, loop verifier work, and persist a step-by-step execution trace.
+
+There is now also a one-shot scan setup flow so a user can provide core inputs like target base URL, actor headers, source code, and API specs, then let the backend bootstrap and start autonomous execution.
 
 ```bash
 cd frontend

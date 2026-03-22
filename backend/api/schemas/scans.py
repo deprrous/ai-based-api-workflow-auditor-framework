@@ -24,6 +24,7 @@ class ScanRunSummary(BaseModel):
     name: str = Field(description="Human-readable scan run name.")
     status: ScanStatus = Field(description="Current scan lifecycle state.")
     target: str | None = Field(default=None, description="Optional target environment label.")
+    target_base_url: str | None = Field(default=None, description="Optional base URL used for replay verification and browser execution.")
     created_at: datetime = Field(description="UTC timestamp when the scan run was created.")
     current_stage: str = Field(description="Current lifecycle stage for the scan run.")
     findings_count: int = Field(description="Total findings attached to the scan run.")
@@ -39,6 +40,11 @@ class StartScanRequest(BaseModel):
         max_length=120,
         description="Optional target environment or application label.",
     )
+    target_base_url: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Optional target base URL for replay verification and browser execution.",
+    )
     notes: str | None = Field(
         default=None,
         max_length=500,
@@ -49,3 +55,9 @@ class StartScanRequest(BaseModel):
 class StartScanResponse(BaseModel):
     run: ScanRunSummary
     message: str = Field(description="Short status message for the caller.")
+
+
+class ScanRuntimeConfig(BaseModel):
+    scan_id: str
+    target_base_url: str | None = None
+    actor_headers: dict[str, dict[str, str]] = Field(default_factory=dict)

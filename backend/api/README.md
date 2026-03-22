@@ -237,6 +237,7 @@ Planner outputs now carry:
 - `GET /api/v1/scans/{scan_id}` - read one scan run.
 - `GET /api/v1/scans/{scan_id}/events` - list persisted runtime events for the scan.
 - `GET /api/v1/scans/{scan_id}/events/stream` - stream live scan updates over SSE.
+- `GET /api/v1/scans/{scan_id}/actors` - list stored actor profiles for replay and browser execution.
 - `POST /api/v1/artifacts/scan/{scan_id}/source` - ingest source code for analyzer and correlation use.
 - `POST /api/v1/artifacts/scan/{scan_id}/api-spec` - ingest OpenAPI or Swagger content.
 - `GET /api/v1/artifacts/scan/{scan_id}` - list ingested artifacts for a scan.
@@ -259,6 +260,7 @@ Planner outputs now carry:
 - `POST /api/v1/scans/{scan_id}/events` - ingest proxy, orchestrator, mapper, or verifier runtime output.
 - `GET /api/v1/scans/{scan_id}/workflow` - read the persisted graph for that scan run.
 - `POST /api/v1/scans` - queue a new scan run and seed its workflow graph.
+- `POST /api/v1/scans/setup` - create a scan, store actor profiles, ingest artifacts, and optionally start orchestration in one request.
 - `GET /api/v1/contracts/runtime-ingest` - list supported runtime producer contracts.
 - `GET /api/v1/ai/providers/catalog` - list the provider-neutral AI catalog for future orchestration wiring.
 - `GET /api/v1/findings` - list findings with optional scan, severity, and status filters.

@@ -17,6 +17,7 @@ class ScanRunRecord(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     target: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    target_base_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     current_stage: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -41,6 +42,19 @@ class ScanRunRecord(Base):
         cascade="all, delete-orphan",
         order_by="FindingRecord.created_at",
     )
+
+
+class ScanActorProfileRecord(Base):
+    __tablename__ = "scan_actor_profiles"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scan_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headers_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class WorkflowGraphRecord(Base):

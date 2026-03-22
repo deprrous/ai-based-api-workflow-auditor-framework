@@ -9,6 +9,7 @@ from api.app.config import get_settings
 from api.app.security import require_ingest_token
 from api.schemas.events import IngestScanEventRequest, ScanEvent, ScanEventEnvelope
 from api.schemas.findings import FindingSummary
+from api.schemas.scan_setup import ScanActorProfileDetail, ScanSetupRequest, ScanSetupResponse
 from api.schemas.scans import ScanRunSummary, StartScanRequest, StartScanResponse
 from api.schemas.verifier_jobs import VerifierJobSummary
 from api.schemas.verifier_runs import VerifierRunSummary
@@ -16,6 +17,7 @@ from api.schemas.workflows import WorkflowGraph
 from api.services.event_service import event_service
 from api.services.finding_service import finding_service
 from api.services.scan_service import scan_service
+from api.services.scan_setup_service import scan_setup_service
 from api.services.verifier_job_service import verifier_job_service
 from api.services.verifier_run_service import verifier_run_service
 from api.services.workflow_service import workflow_service
@@ -45,6 +47,15 @@ async def list_scan_findings(scan_id: str) -> list[FindingSummary]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan run not found.")
 
     return finding_service.list_findings(scan_id=scan_id)
+
+
+@router.get("/{scan_id}/actors", response_model=list[ScanActorProfileDetail], summary="List actor profiles for a scan run")
+async def list_scan_actors(scan_id: str) -> list[ScanActorProfileDetail]:
+    scan = scan_service.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan run not found.")
+
+    return scan_service.list_scan_actor_profiles(scan_id)
 
 
 @router.get("/{scan_id}/verifier-runs", response_model=list[VerifierRunSummary], summary="List verifier runs for a scan run")
@@ -157,3 +168,13 @@ async def start_scan(payload: StartScanRequest) -> StartScanResponse:
         run=scan,
         message="Scan queued. Workflow mapping and verification will be attached later.",
     )
+
+
+@router.post(
+    "/setup",
+    response_model=ScanSetupResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create and bootstrap a scan from user inputs",
+)
+async def setup_scan(payload: ScanSetupRequest) -> ScanSetupResponse:
+    return scan_setup_service.setup_scan(payload)

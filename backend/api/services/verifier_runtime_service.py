@@ -33,6 +33,7 @@ from api.schemas.verifier_jobs import ClaimVerifierJobRequest, CompleteVerifierJ
 from api.services.event_service import event_service
 from api.services.callback_service import callback_service
 from api.services.replay_artifact_service import replay_artifact_service
+from api.services.scan_service import scan_service
 from api.services.verifier_job_service import verifier_job_service
 from tools.verifier.browser_execution import BrowserExecutor, PlaywrightBrowserExecutor
 from tools.verifier.response_analysis import evaluate_assertions
@@ -363,6 +364,9 @@ class HttpReplayVerifierExecutor:
         replay_plan: ReplayPlan,
         variant: ReplayPayloadVariant,
     ) -> VerifierExecutionOutcome:
+        runtime_config = scan_service.get_scan_runtime_config(job.scan_id)
+        effective_base_url = runtime_config.target_base_url if runtime_config and runtime_config.target_base_url else self.base_url
+        actor_headers_source = runtime_config.actor_headers if runtime_config is not None else {}
         callback_context = self._prepare_callback_context(job, variant=variant)
         callback_urls = {label: expectation.callback_url for label, expectation in callback_context.items()}
         default_actor = replay_plan.actor or (replay_plan.requests[-1].actor if replay_plan.requests else None)
@@ -395,12 +399,16 @@ class HttpReplayVerifierExecutor:
                 mutations=variant.mutations,
                 dynamic_headers=dynamic_headers,
                 callback_urls=callback_urls,
+                base_url=effective_base_url,
+                actor_headers_source=actor_headers_source,
             )
             if response_result.status_code in replay_plan.refresh_on_status_codes and replay_plan.refresh_requests and replay_plan.retry_after_refresh:
                 refresh_succeeded = self._execute_refresh_requests(
                     replay_plan.refresh_requests,
                     plan_actor=default_actor,
                     dynamic_headers=dynamic_headers,
+                    base_url=effective_base_url,
+                    actor_headers_source=actor_headers_source,
                 )
                 if refresh_succeeded:
                     baseline_result, response_result = self._execute_request(
@@ -410,13 +418,22 @@ class HttpReplayVerifierExecutor:
                         mutations=variant.mutations,
                         dynamic_headers=dynamic_headers,
                         callback_urls=callback_urls,
+                        base_url=effective_base_url,
+                        actor_headers_source=actor_headers_source,
                     )
 
             response_results.append(response_result)
             if baseline_result is not None:
                 baseline_results[response_result.request.request_fingerprint] = baseline_result
             _apply_set_cookie(dynamic_headers, response_result.response_headers)
-        self._run_browser_plan(variant.browser_plan, callback_context=callback_context, dynamic_headers=dynamic_headers, default_actor=default_actor)
+        self._run_browser_plan(
+            variant.browser_plan,
+            callback_context=callback_context,
+            dynamic_headers=dynamic_headers,
+            default_actor=default_actor,
+            base_url=effective_base_url,
+            actor_headers_source=actor_headers_source,
+        )
         final_result = response_results[-1]
         assertions_passed, assertion_explanations = evaluate_assertions(
             variant.assertions,
@@ -587,19 +604,21 @@ class HttpReplayVerifierExecutor:
         callback_context: dict[str, CallbackExpectationDetail],
         dynamic_headers: dict[str, str],
         default_actor: str | None,
+        base_url: str | None,
+        actor_headers_source: dict[str, dict[str, str]],
     ) -> None:
         if browser_plan is None or not browser_plan.visits:
             return
         if self.browser_executor is None:
             return
-        if self.base_url is None:
+        if base_url is None:
             return
 
         for visit in browser_plan.visits:
             actor_key = visit.actor or default_actor
-            headers = self.actor_headers.get(actor_key or "", {})
+            headers = actor_headers_source.get(actor_key or "", self.actor_headers.get(actor_key or "", {}))
             merged_headers = _merge_headers(headers, dynamic_headers)
-            self.browser_executor.visit(visit, base_url=_browser_base_url(self.base_url), headers=merged_headers)
+            self.browser_executor.visit(visit, base_url=_browser_base_url(base_url), headers=merged_headers)
 
     def _execute_request(
         self,
@@ -610,6 +629,8 @@ class HttpReplayVerifierExecutor:
         mutations: list[ReplayMutationSpec],
         dynamic_headers: dict[str, str],
         callback_urls: dict[str, str],
+        base_url: str | None,
+        actor_headers_source: dict[str, dict[str, str]],
     ) -> tuple[ReplayHttpResult | None, ReplayHttpResult]:
         base_headers = dict(artifact.request_headers) if artifact is not None else {}
         base_body = _decode_body(artifact.request_body_base64) if artifact is not None else None
@@ -621,12 +642,15 @@ class HttpReplayVerifierExecutor:
         )
         baseline_result = None
         if has_actor_switch:
-            baseline_headers = self.actor_headers.get(request_spec.actor or plan_actor or "", {})
+            baseline_headers = actor_headers_source.get(
+                request_spec.actor or plan_actor or "",
+                self.actor_headers.get(request_spec.actor or plan_actor or "", {}),
+            )
             merged_baseline_headers = _merge_headers(base_headers, baseline_headers)
             merged_baseline_headers = _merge_headers(merged_baseline_headers, dynamic_headers)
             baseline_result = self.transport(
                 request_spec,
-                base_url=self.base_url,
+                base_url=base_url,
                 timeout_seconds=self.timeout_seconds,
                 verify_tls=self.verify_tls,
                 headers=merged_baseline_headers,
@@ -641,13 +665,13 @@ class HttpReplayVerifierExecutor:
             mutations=mutations,
             callback_urls=callback_urls,
         )
-        actor_headers = self.actor_headers.get(actor_key or "", {})
+        actor_headers = actor_headers_source.get(actor_key or "", self.actor_headers.get(actor_key or "", {}))
         merged_headers = _merge_headers(interim_headers, actor_headers)
         merged_headers = _merge_headers(merged_headers, dynamic_headers)
         mutated_request = request_spec.model_copy(update={"path": request_path, "actor": actor_key})
         return baseline_result, self.transport(
             mutated_request,
-            base_url=self.base_url,
+            base_url=base_url,
             timeout_seconds=self.timeout_seconds,
             verify_tls=self.verify_tls,
             headers=merged_headers,
@@ -660,11 +684,13 @@ class HttpReplayVerifierExecutor:
         *,
         plan_actor: str | None,
         dynamic_headers: dict[str, str],
+        base_url: str | None,
+        actor_headers_source: dict[str, dict[str, str]],
     ) -> bool:
         for refresh_request in refresh_requests:
             request_spec = _build_refresh_request_spec(refresh_request)
             actor_key = refresh_request.actor or plan_actor
-            actor_headers = self.actor_headers.get(actor_key or "", {})
+            actor_headers = actor_headers_source.get(actor_key or "", self.actor_headers.get(actor_key or "", {}))
             merged_headers = _merge_headers(_normalize_header_keys(refresh_request.headers), actor_headers)
             merged_headers = _merge_headers(merged_headers, dynamic_headers)
             body = _decode_body(refresh_request.body_base64)
@@ -672,7 +698,7 @@ class HttpReplayVerifierExecutor:
                 merged_headers.setdefault("Content-Type", refresh_request.content_type)
             result = self.transport(
                 request_spec,
-                base_url=self.base_url,
+                base_url=base_url,
                 timeout_seconds=self.timeout_seconds,
                 verify_tls=self.verify_tls,
                 headers=merged_headers,
