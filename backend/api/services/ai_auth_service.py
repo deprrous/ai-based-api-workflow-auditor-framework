@@ -23,6 +23,7 @@ from api.schemas.ai import (
     AiProviderValidationResult,
 )
 from api.services.secret_service import secret_service
+from api.services.openai_browser_oauth import OPENAI_OAUTH_LOCAL_REDIRECT_URI, ensure_openai_oauth_server
 from orchestrator.providers.registry import get_provider_catalog
 
 OPENAI_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -364,7 +365,11 @@ class AiAuthService:
                 return None
             state = secrets.token_urlsafe(24)
             pkce, challenge = _pkce_pair()
-            callback_url = f"{get_settings().ai_oauth_redirect_base_url.rstrip('/')}/{config.provider_key}/oauth/callback"
+            callback_url = (
+                OPENAI_OAUTH_LOCAL_REDIRECT_URI
+                if config.provider_key == "openai"
+                else f"{get_settings().ai_oauth_redirect_base_url.rstrip('/')}/{config.provider_key}/oauth/callback"
+            )
             record = AiProviderOAuthStateRecord(
                 id=f"oauth-{uuid4().hex[:12]}",
                 provider_key=config.provider_key,
@@ -378,6 +383,7 @@ class AiAuthService:
             )
             repository.add_oauth_state(record)
             if config.provider_key == "openai":
+                ensure_openai_oauth_server()
                 authorization_url = build_openai_authorization_url(
                     redirect_uri=callback_url,
                     state=state,

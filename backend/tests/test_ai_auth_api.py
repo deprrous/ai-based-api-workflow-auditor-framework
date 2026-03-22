@@ -123,11 +123,12 @@ def test_google_cloud_credentials_and_openai_oauth_flow(client, monkeypatch):
     authorization = authorize_response.json()
     assert authorization["state"]
     assert authorization["authorization_url"].startswith("https://auth.openai.com/oauth/authorize")
+    assert "redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback" in authorization["authorization_url"]
 
     def fake_exchange(*, code: str, verifier: str, redirect_uri: str):
         assert code == "test-oauth-code"
         assert verifier
-        assert redirect_uri.endswith("/openai/oauth/callback")
+        assert redirect_uri == "http://localhost:1455/auth/callback"
         return {
             "access_token": "access.jwt.token",
             "refresh_token": "refresh-token",
