@@ -162,6 +162,12 @@ Then run the demo pentest script against a local backend:
 python3 scripts/demo_pentest.py --backend-url http://127.0.0.1:8000/api/v1 --target-url http://127.0.0.1:9010
 ```
 
+Inspect what happened behind the scenes:
+
+```bash
+python3 scripts/inspect_scan.py --backend-url http://127.0.0.1:8000/api/v1 --scan-id <scan-id>
+```
+
 ```bash
 cd frontend
 npm install
