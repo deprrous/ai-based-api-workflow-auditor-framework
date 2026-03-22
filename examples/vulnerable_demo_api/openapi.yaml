@@ -26,6 +26,24 @@ paths:
                   type: string
                 role:
                   type: string
+  /v1/projects/{projectId}/billing:
+    get:
+      summary: Read project billing
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+  /v1/projects/{projectId}:
+    delete:
+      summary: Delete a project
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
   /v1/search:
     get:
       summary: Search projects

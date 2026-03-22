@@ -1,14 +1,26 @@
 from __future__ import annotations
 
-import asyncio
 from itertools import count
 from typing import Any
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse
+
+from examples.vulnerable_demo_api.billing_handler import router as billing_router
+from examples.vulnerable_demo_api.imports_handler import router as imports_router
+from examples.vulnerable_demo_api.preview_handler import router as preview_router
+from examples.vulnerable_demo_api.project_admin_handler import router as project_admin_router
+from examples.vulnerable_demo_api.project_members_handler import router as project_members_router
+from examples.vulnerable_demo_api.search_handler import router as search_router
 
 app = FastAPI(title="Vulnerable Demo API", version="0.1.0")
+
+app.include_router(search_router)
+app.include_router(imports_router)
+app.include_router(preview_router)
+app.include_router(project_members_router)
+app.include_router(project_admin_router)
+app.include_router(billing_router)
 
 comment_ids = count(1)
 comments: dict[int, dict[str, Any]] = {}
@@ -24,65 +36,12 @@ def actor_from_request(request: Request) -> str:
 
 @app.get("/v1/projects")
 async def list_projects() -> dict[str, Any]:
-    return {"projects": [{"id": 123, "name": "Demo Project"}]}
-
-
-@app.post("/v1/projects/{project_id}/members")
-async def invite_member(project_id: int, payload: dict[str, Any], request: Request) -> dict[str, Any]:
     return {
-        "project_id": project_id,
-        "invited": payload,
-        "actor": actor_from_request(request),
+        "projects": [
+            {"id": 123, "name": "Tenant Alpha Project"},
+            {"id": 999999, "name": "Tenant Beta Project"},
+        ]
     }
-
-
-@app.get("/v1/search")
-async def search(q: str = "") -> PlainTextResponse:
-    unsafe_query = f"SELECT * FROM products WHERE name LIKE '%{q}%'"  # intentional vulnerable demo sink
-    if "pg_sleep" in q.lower():
-        await asyncio.sleep(3)
-        return PlainTextResponse(f"Query delayed: {unsafe_query}", status_code=200)
-    if any(token in q.lower() for token in ("'", "union", "--", "or 1=1")):
-        return PlainTextResponse("SQL syntax error near 'UNION'", status_code=500)
-    return PlainTextResponse(f"Executed query: {unsafe_query}", status_code=200)
-
-
-@app.post("/v1/imports")
-async def create_import(payload: dict[str, Any]) -> JSONResponse:
-    target_url = str(payload.get("url") or payload.get("callback_url") or "")
-    if not target_url:
-        raise HTTPException(status_code=400, detail="url or callback_url is required")
-
-    if target_url.startswith("http://169.254.169.254/latest/meta-data/"):
-        return JSONResponse(
-            {
-                "fetched": target_url,
-                "metadata": "instance-id: i-demo123 ami-id: ami-demo123",
-            }
-        )
-
-    if target_url.startswith("http://127.0.0.1") or target_url.startswith("http://localhost"):
-        return JSONResponse(
-            {
-                "fetched": target_url,
-                "result": "localhost connection succeeded against internal service",
-            }
-        )
-
-    async with httpx.AsyncClient(follow_redirects=True, timeout=5.0) as client:
-        response = await client.get(target_url)
-        return JSONResponse(
-            {
-                "fetched": target_url,
-                "status": response.status_code,
-                "body_excerpt": response.text[:200],
-            }
-        )
-
-
-@app.get("/v1/preview", response_class=HTMLResponse)
-async def preview(html: str = "") -> HTMLResponse:
-    return HTMLResponse(f"<html><body><h1>Preview</h1><div>{html}</div></body></html>")
 
 
 @app.post("/v1/comments")

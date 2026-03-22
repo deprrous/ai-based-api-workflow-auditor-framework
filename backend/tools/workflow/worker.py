@@ -352,7 +352,16 @@ def build_assertions(candidate: WorkflowPathFindingCandidate, replay_requests: l
     final_request = replay_requests[-1]
     assertions: list[ReplayAssertionSpec] = []
 
-    if candidate.vulnerability_class in {"bola_idor", "tenant_isolation", "bfla"}:
+    if candidate.vulnerability_class in {"bola_idor", "tenant_isolation"}:
+        assertions.append(
+            ReplayAssertionSpec(
+                type=ReplayAssertionType.BODY_DIFFERS_FROM_BASELINE,
+                target_request_fingerprint=final_request.request_fingerprint,
+                description="Foreign object access should return a different resource body when authorization boundaries are bypassed.",
+            )
+        )
+
+    if candidate.vulnerability_class == "bfla":
         assertions.extend(
             [
                 ReplayAssertionSpec(

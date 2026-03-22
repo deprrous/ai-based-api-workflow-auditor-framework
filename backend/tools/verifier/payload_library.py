@@ -310,9 +310,9 @@ def build_payload_variants(
                 ],
                 assertions=[
                     ReplayAssertionSpec(
-                        type=ReplayAssertionType.STATUS_DIFFERS_FROM_BASELINE,
+                        type=ReplayAssertionType.BODY_DIFFERS_FROM_BASELINE,
                         target_request_fingerprint=final_request.request_fingerprint,
-                        description="IDOR replay should change the authorization outcome or resource response.",
+                        description="IDOR replay should return a different resource body when a foreign object id is accepted.",
                     )
                 ],
             )
@@ -321,9 +321,9 @@ def build_payload_variants(
     if vulnerability_class == VulnerabilityClass.BFLA:
         return [
             ReplayPayloadVariant(
-                id="bfla-actor-switch",
-                label="Low-privilege actor replay",
-                description="Switch to a lower-privilege actor and compare privileged endpoint behavior.",
+                id="bfla-low-priv-success",
+                label="Low-privilege actor replay success",
+                description="Switch to a lower-privilege actor and confirm the privileged endpoint still succeeds.",
                 mutations=[
                     ReplayMutationSpec(
                         type=ReplayMutationType.ACTOR_SWITCH,
@@ -333,9 +333,10 @@ def build_payload_variants(
                 ],
                 assertions=[
                     ReplayAssertionSpec(
-                        type=ReplayAssertionType.STATUS_DIFFERS_FROM_BASELINE,
+                        type=ReplayAssertionType.STATUS_IN,
                         target_request_fingerprint=final_request.request_fingerprint,
-                        description="Low-privilege actor should not retain the same endpoint access as baseline.",
+                        description="Low-privilege actor should not be able to execute a privileged endpoint successfully.",
+                        status_codes=[200, 202, 204],
                     )
                 ],
             ),

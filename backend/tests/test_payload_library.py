@@ -56,4 +56,4 @@ def test_payload_library_returns_browser_variant_for_reflected_xss() -> None:
 def test_payload_library_returns_authz_variant() -> None:
     variants = build_payload_variants(VulnerabilityClass.BFLA, _requests())
     labels = {variant.id for variant in variants}
-    assert {"bfla-actor-switch", "bfla-header-escalation"}.issubset(labels)
+    assert {"bfla-low-priv-success", "bfla-header-escalation"}.issubset(labels)
