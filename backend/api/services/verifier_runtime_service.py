@@ -830,8 +830,6 @@ def build_runtime_service(*, settings: Settings) -> VerifierRuntimeService | Non
             poll_interval_seconds=poll_interval_seconds,
         )
     if normalized_mode == "http-replay":
-        if settings.verifier_replay_base_url is None:
-            raise ValueError("AUDITOR_VERIFIER_REPLAY_BASE_URL must be configured for http-replay mode.")
         browser_executor = None
         if settings.browser_execution_enabled:
             browser_executor = PlaywrightBrowserExecutor(

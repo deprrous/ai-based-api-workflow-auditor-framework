@@ -1,0 +1,72 @@
+openapi: 3.1.0
+info:
+  title: Vulnerable Demo API
+  version: 0.1.0
+paths:
+  /v1/projects:
+    get:
+      summary: List projects
+  /v1/projects/{projectId}/members:
+    post:
+      summary: Invite a member to a project
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                role:
+                  type: string
+  /v1/search:
+    get:
+      summary: Search projects
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+  /v1/imports:
+    post:
+      summary: Import data from a URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                callback_url:
+                  type: string
+  /v1/preview:
+    get:
+      summary: Preview HTML content
+      parameters:
+        - name: html
+          in: query
+          schema:
+            type: string
+  /v1/comments:
+    post:
+      summary: Store a comment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                message:
+                  type: string

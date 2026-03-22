@@ -143,6 +143,23 @@ The backend now also has a first autonomous pentest orchestration session layer 
 
 There is now also a one-shot scan setup flow so a user can provide core inputs like target base URL, actor headers, source code, and API specs, then let the backend bootstrap and start autonomous execution.
 
+## Local Demo
+
+An intentionally vulnerable local API for demo pentests lives in `examples/vulnerable_demo_api/`.
+
+Run the target:
+
+```bash
+source .venv/bin/activate
+uvicorn examples.vulnerable_demo_api.app:app --host 127.0.0.1 --port 9010
+```
+
+Then run the demo pentest script against a local backend:
+
+```bash
+python3 scripts/demo_pentest.py --backend-url http://127.0.0.1:8000/api/v1 --target-url http://127.0.0.1:9010
+```
+
 ```bash
 cd frontend
 npm install

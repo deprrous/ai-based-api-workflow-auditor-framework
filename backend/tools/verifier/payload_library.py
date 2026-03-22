@@ -116,6 +116,12 @@ def build_payload_variants(
                         target_request_fingerprint=final_request.request_fingerprint,
                         query_param="url",
                         value="http://169.254.169.254/latest/meta-data/",
+                    ),
+                    ReplayMutationSpec(
+                        type=ReplayMutationType.BODY_JSON_SET,
+                        target_request_fingerprint=final_request.request_fingerprint,
+                        body_field="url",
+                        value="http://169.254.169.254/latest/meta-data/",
                     )
                 ],
                 assertions=[
@@ -137,6 +143,12 @@ def build_payload_variants(
                         target_request_fingerprint=final_request.request_fingerprint,
                         query_param="url",
                         value="http://127.0.0.1:80/",
+                    ),
+                    ReplayMutationSpec(
+                        type=ReplayMutationType.BODY_JSON_SET,
+                        target_request_fingerprint=final_request.request_fingerprint,
+                        body_field="url",
+                        value="http://127.0.0.1:80/",
                     )
                 ],
                 assertions=[
@@ -157,6 +169,12 @@ def build_payload_variants(
                         type=ReplayMutationType.QUERY_SET,
                         target_request_fingerprint=final_request.request_fingerprint,
                         query_param="url",
+                        value="{{callback_url:ssrf_oob}}",
+                    ),
+                    ReplayMutationSpec(
+                        type=ReplayMutationType.BODY_JSON_SET,
+                        target_request_fingerprint=final_request.request_fingerprint,
+                        body_field="url",
                         value="{{callback_url:ssrf_oob}}",
                     )
                 ],
@@ -238,7 +256,7 @@ def build_payload_variants(
                     ReplayMutationSpec(
                         type=ReplayMutationType.QUERY_SET,
                         target_request_fingerprint=final_request.request_fingerprint,
-                        query_param="q",
+                        query_param="html",
                         value="auditor-reflected-xss-marker",
                     )
                 ],
@@ -259,7 +277,7 @@ def build_payload_variants(
                     ReplayMutationSpec(
                         type=ReplayMutationType.QUERY_SET,
                         target_request_fingerprint=final_request.request_fingerprint,
-                        query_param="q",
+                        query_param="html",
                         value="{{xss_callback:reflected_xss_oob}}",
                     )
                 ],
