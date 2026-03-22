@@ -18,7 +18,7 @@ This module hosts the FastAPI control plane exposed to the frontend.
 - `routers/contracts.py` - runtime producer contract catalog endpoints.
 - `routers/findings.py` - finding listing and detail endpoints.
 - `routers/hypotheses.py` - persisted orchestration hypothesis listing and detail endpoints.
-- `routers/ai.py` - provider-neutral AI catalog endpoints.
+- `routers/ai.py` - provider catalog, provider config, auth, validation, and OAuth scaffolding endpoints.
 - `routers/artifacts.py` - source-code and API-spec artifact ingestion and listing endpoints.
 - `routers/orchestration.py` - autonomous orchestration session endpoints.
 - `routers/planner.py` - deterministic workflow planner execution endpoints.
@@ -32,7 +32,9 @@ This module hosts the FastAPI control plane exposed to the frontend.
 - `app/db_models.py` - relational persistence models for scans, graphs, and events.
 - `services/finding_service.py` - finding retrieval and filtering facade.
 - `services/hypothesis_service.py` - orchestration hypothesis retrieval and selection support.
-- `services/ai_provider_service.py` - provider-neutral AI catalog service.
+- `services/ai_provider_service.py` - provider-neutral AI catalog and provider resolution service.
+- `services/ai_auth_service.py` - provider auth/config management, validation, and OAuth state handling.
+- `services/secret_service.py` - encrypted storage helper for provider credentials.
 - `services/artifact_service.py` - source-code and OpenAPI ingestion service.
 - `services/orchestration_service.py` - autonomous orchestration session lifecycle and trace persistence.
 - `services/planner_service.py` - deterministic planner that derives flagged paths from proxy observations.
@@ -112,6 +114,14 @@ The orchestration loop can also use the provider-neutral AI layer to:
 The backend now also supports automatic hypothesis transitions from later evidence, including merge, reopen, downgrade, and abandonment behavior, plus remediation/report follow-up subloops after confirmations.
 
 Deterministic fallback remains in place so orchestration stays resilient when AI is unavailable or makes a poor choice.
+
+The backend also now supports a provider-auth abstraction for AI connectivity with:
+
+- `api_key`
+- `oauth_browser`
+- `cloud_credentials`
+
+Provider auth is stored separately from provider config, credentials are encrypted at rest, and normal API reads return only redacted summaries.
 
 ## Automatic verifier runner
 
@@ -263,6 +273,14 @@ Planner outputs now carry:
 - `POST /api/v1/scans/setup` - create a scan, store actor profiles, ingest artifacts, and optionally start orchestration in one request.
 - `GET /api/v1/contracts/runtime-ingest` - list supported runtime producer contracts.
 - `GET /api/v1/ai/providers/catalog` - list the provider-neutral AI catalog for future orchestration wiring.
+- `GET /api/v1/ai/providers/configs` - list stored AI provider configs.
+- `POST /api/v1/ai/providers/configs` - create an AI provider config.
+- `GET /api/v1/ai/providers/configs/{config_id}` - read one AI provider config.
+- `POST /api/v1/ai/providers/configs/{config_id}/auth` - upsert auth for a provider config.
+- `POST /api/v1/ai/providers/configs/{config_id}/validate` - validate a provider config.
+- `POST /api/v1/ai/providers/configs/{config_id}/activate` - activate a provider config as default.
+- `POST /api/v1/ai/providers/{provider_key}/oauth/authorize` - start browser/OAuth auth for a provider.
+- `GET /api/v1/ai/providers/{provider_key}/oauth/callback` - finalize browser/OAuth auth for a provider.
 - `GET /api/v1/findings` - list findings with optional scan, severity, and status filters.
 - `GET /api/v1/findings/{finding_id}` - read detailed finding data and evidence.
 - `GET /api/v1/hypotheses/scan/{scan_id}` - list persisted orchestration hypotheses for a scan.

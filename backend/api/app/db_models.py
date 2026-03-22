@@ -335,3 +335,46 @@ class ServiceAccountRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AiProviderConfigRecord(Base):
+    __tablename__ = "ai_provider_configs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    provider_kind: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    default_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AiProviderAuthRecord(Base):
+    __tablename__ = "ai_provider_auth_records"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_config_id: Mapped[str] = mapped_column(ForeignKey("ai_provider_configs.id", ondelete="CASCADE"), nullable=False, index=True)
+    auth_method: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    encrypted_secret_json: Mapped[str] = mapped_column(Text, nullable=False)
+    redacted_summary_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AiProviderOAuthStateRecord(Base):
+    __tablename__ = "ai_provider_oauth_states"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_key: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    provider_config_id: Mapped[str | None] = mapped_column(ForeignKey("ai_provider_configs.id", ondelete="CASCADE"), nullable=True, index=True)
+    state_token: Mapped[str] = mapped_column(String(120), nullable=False, unique=True, index=True)
+    pkce_verifier: Mapped[str] = mapped_column(String(200), nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(String(300), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

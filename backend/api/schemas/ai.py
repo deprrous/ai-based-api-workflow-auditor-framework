@@ -12,6 +12,7 @@ class AiProviderKind(StrEnum):
     OPENAI_COMPATIBLE = "openai_compatible"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GOOGLE = "google"
     LOCAL = "local"
 
 
@@ -22,6 +23,27 @@ class AiCapability(StrEnum):
     EMBEDDINGS = "embeddings"
 
 
+class AiAuthMethod(StrEnum):
+    NONE = "none"
+    API_KEY = "api_key"
+    OAUTH_BROWSER = "oauth_browser"
+    CLOUD_CREDENTIALS = "cloud_credentials"
+
+
+class AiProviderAuthStatus(StrEnum):
+    CONFIGURED = "configured"
+    VALID = "valid"
+    INVALID = "invalid"
+    EXPIRED = "expired"
+
+
+class AiProviderAuthMethodDescriptor(BaseModel):
+    method: AiAuthMethod
+    label: str
+    description: str
+    required_fields: list[str] = Field(default_factory=list)
+
+
 class AiProviderDescriptor(BaseModel):
     key: str
     kind: AiProviderKind
@@ -29,6 +51,56 @@ class AiProviderDescriptor(BaseModel):
     description: str
     capabilities: list[AiCapability]
     config_fields: list[str] = Field(default_factory=list)
+    auth_methods: list[AiProviderAuthMethodDescriptor] = Field(default_factory=list)
+
+
+class AiProviderConfigSummary(BaseModel):
+    id: str
+    provider_key: str
+    provider_kind: AiProviderKind
+    display_name: str
+    enabled: bool
+    is_default: bool
+    default_model: str | None = None
+    auth_method: AiAuthMethod | None = None
+    auth_status: AiProviderAuthStatus | None = None
+    redacted_summary: dict[str, object] = Field(default_factory=dict)
+
+
+class AiProviderConfigDetail(AiProviderConfigSummary):
+    validated_at: str | None = None
+    last_error: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AiProviderConfigCreateRequest(BaseModel):
+    provider_key: str = Field(min_length=2, max_length=80)
+    display_name: str | None = Field(default=None, max_length=160)
+    default_model: str | None = Field(default=None, max_length=120)
+    enabled: bool = True
+    is_default: bool = False
+
+
+class AiProviderAuthUpsertRequest(BaseModel):
+    auth_method: AiAuthMethod
+    secret: dict[str, object] = Field(default_factory=dict)
+
+
+class AiProviderValidationResult(BaseModel):
+    config_id: str
+    provider_key: str
+    auth_method: AiAuthMethod | None = None
+    status: AiProviderAuthStatus
+    message: str
+
+
+class AiOAuthAuthorizationResponse(BaseModel):
+    provider_key: str
+    config_id: str
+    authorization_url: str
+    callback_url: str
+    state: str
 
 
 class AiProviderCatalog(BaseModel):

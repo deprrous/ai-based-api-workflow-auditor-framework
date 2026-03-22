@@ -60,6 +60,18 @@ def _read_json_object(value: str | None, default: dict[str, dict[str, str]]) -> 
     return normalized or default
 
 
+def _read_json_any(value: str | None, default: dict[str, object]) -> dict[str, object]:
+    if value is None:
+        return default
+
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return default
+
+    return parsed if isinstance(parsed, dict) else default
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     app_name: str
@@ -88,6 +100,8 @@ class Settings:
     replay_artifact_redact_headers: tuple[str, ...]
     replay_artifact_redact_body_keys: tuple[str, ...]
     ai_default_provider: str
+    secret_encryption_key: str
+    ai_oauth_redirect_base_url: str
     ai_openai_compatible_base_url: str | None
     ai_openai_compatible_api_key: str | None
     ai_openai_compatible_model: str | None
@@ -160,6 +174,11 @@ def get_settings() -> Settings:
             ),
         ),
         ai_default_provider=os.getenv("AUDITOR_AI_DEFAULT_PROVIDER", "mock"),
+        secret_encryption_key=os.getenv("AUDITOR_SECRET_ENCRYPTION_KEY", "dev-secret-encryption-key"),
+        ai_oauth_redirect_base_url=os.getenv(
+            "AUDITOR_AI_OAUTH_REDIRECT_BASE_URL",
+            "http://127.0.0.1:8000/api/v1/ai/providers",
+        ),
         ai_openai_compatible_base_url=os.getenv("AUDITOR_AI_OPENAI_COMPATIBLE_BASE_URL") or None,
         ai_openai_compatible_api_key=os.getenv("AUDITOR_AI_OPENAI_COMPATIBLE_API_KEY") or None,
         ai_openai_compatible_model=os.getenv("AUDITOR_AI_OPENAI_COMPATIBLE_MODEL") or None,

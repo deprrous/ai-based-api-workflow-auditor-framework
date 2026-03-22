@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from api.schemas.ai import (
+    AiAuthMethod,
     AiHypothesisSelectionDecision,
     AiHypothesisSelectionRequest,
     AiCapability,
@@ -13,7 +14,7 @@ from api.schemas.ai import (
     AiPlanningProposal,
     AiProviderKind,
 )
-from orchestrator.providers.base import build_descriptor
+from orchestrator.providers.base import auth_descriptor, build_descriptor
 
 
 def _severity_score(severity: str) -> int:
@@ -42,6 +43,14 @@ class MockPlanningProvider:
             description=self.description,
             capabilities=[AiCapability.CHAT, AiCapability.JSON_OUTPUT],
             config_fields=[],
+            auth_methods=[
+                auth_descriptor(
+                    method=AiAuthMethod.NONE,
+                    label="No Auth",
+                    description="Mock provider does not require credentials.",
+                    required_fields=[],
+                )
+            ],
         )
 
     def validate(self) -> None:

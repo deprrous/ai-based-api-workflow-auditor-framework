@@ -6,6 +6,8 @@ from typing import Protocol
 from api.schemas.ai import (
     AiHypothesisSelectionDecision,
     AiHypothesisSelectionRequest,
+    AiAuthMethod,
+    AiProviderAuthMethodDescriptor,
     AiCapability,
     AiNextActionDecision,
     AiNextActionRequest,
@@ -43,6 +45,7 @@ def build_descriptor(
     description: str,
     capabilities: list[AiCapability],
     config_fields: list[str],
+    auth_methods: list[AiProviderAuthMethodDescriptor] | None = None,
 ) -> AiProviderDescriptor:
     return AiProviderDescriptor(
         key=key,
@@ -51,4 +54,20 @@ def build_descriptor(
         description=description,
         capabilities=capabilities,
         config_fields=config_fields,
+        auth_methods=auth_methods or [],
+    )
+
+
+def auth_descriptor(
+    *,
+    method: AiAuthMethod,
+    label: str,
+    description: str,
+    required_fields: list[str],
+) -> AiProviderAuthMethodDescriptor:
+    return AiProviderAuthMethodDescriptor(
+        method=method,
+        label=label,
+        description=description,
+        required_fields=required_fields,
     )

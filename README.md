@@ -115,6 +115,14 @@ The backend also now supports persisted source-code and OpenAPI artifact ingesti
 
 It also now supports AI-assisted planning on top of deterministic candidates, with a no-key `mock` provider for local backend testing and an `openai-compatible` path for future real model integration.
 
+The backend now also includes a provider-auth abstraction for AI connectivity with API key, browser/OAuth scaffolding, and cloud-credentials support.
+
+That means the framework can be configured to use AI providers through:
+
+- API keys
+- browser/OAuth auth scaffolding where supported
+- cloud credentials for providers like Google/Gemini
+
 The deterministic backend planner now has explicit vulnerability coverage rules for:
 
 - BOLA / IDOR
