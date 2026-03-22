@@ -593,42 +593,59 @@ class OrchestrationService:
                     continue
 
                 if next_kind == OrchestrationStepKind.AI_PLANNER:
-                    ai_result = planner_service.run_ai_workflow_planner(
-                        scan_id,
-                        AiPlanningRunRequest(
-                            provider_key=payload.ai_provider_key,
-                            apply=True,
-                            candidate_limit=payload.ai_candidate_limit,
-                            min_priority_score=payload.ai_min_priority_score,
-                        ),
-                    )
-                    if ai_result is None:
-                        raise RuntimeError("AI-assisted planner could not run for this scan.")
-                    ai_planning_detail = planner_service.get_planning_run(ai_result.planning_run_id)
-                    ai_candidates = ai_planning_detail.candidates if ai_planning_detail is not None else []
-                    synced = hypothesis_service.sync_hypotheses(
-                        scan_id=scan_id,
-                        session_id=session_id,
-                        planning_run_id=ai_result.planning_run_id,
-                        candidates=ai_candidates,
-                        decision_source="ai",
-                    )
-                    memory = self._refresh_memory(scan_id, memory)
-                    memory["ai_planning_runs"] = _memory_int(memory, "ai_planning_runs") + 1
-                    memory["last_ai_candidate_count"] = ai_result.candidate_count
-                    recorder.append_step(
-                        kind=OrchestrationStepKind.AI_PLANNER,
-                        status=OrchestrationStepStatus.COMPLETED,
-                        title="Run AI-assisted planner",
-                        detail=f"AI planner suggested {ai_result.suggested_count} paths and emitted {ai_result.emitted_count} paths.",
-                        payload=ai_result.model_dump(mode="json"),
-                        memory_updates={
-                            "planning_runs": [ai_result.planning_run_id],
-                            "notes": [f"ai_hypotheses_synced={len(synced)}"],
-                            "ai_planning_runs": memory["ai_planning_runs"],
-                            "last_ai_candidate_count": memory["last_ai_candidate_count"],
-                        },
-                    )
+                    try:
+                        ai_result = planner_service.run_ai_workflow_planner(
+                            scan_id,
+                            AiPlanningRunRequest(
+                                provider_key=payload.ai_provider_key,
+                                apply=True,
+                                candidate_limit=payload.ai_candidate_limit,
+                                min_priority_score=payload.ai_min_priority_score,
+                            ),
+                        )
+                        if ai_result is None:
+                            raise RuntimeError("AI-assisted planner could not run for this scan.")
+                        ai_planning_detail = planner_service.get_planning_run(ai_result.planning_run_id)
+                        ai_candidates = ai_planning_detail.candidates if ai_planning_detail is not None else []
+                        synced = hypothesis_service.sync_hypotheses(
+                            scan_id=scan_id,
+                            session_id=session_id,
+                            planning_run_id=ai_result.planning_run_id,
+                            candidates=ai_candidates,
+                            decision_source="ai",
+                        )
+                        memory = self._refresh_memory(scan_id, memory)
+                        memory["ai_planning_runs"] = _memory_int(memory, "ai_planning_runs") + 1
+                        memory["last_ai_candidate_count"] = ai_result.candidate_count
+                        recorder.append_step(
+                            kind=OrchestrationStepKind.AI_PLANNER,
+                            status=OrchestrationStepStatus.COMPLETED,
+                            title="Run AI-assisted planner",
+                            detail=f"AI planner suggested {ai_result.suggested_count} paths and emitted {ai_result.emitted_count} paths.",
+                            payload=ai_result.model_dump(mode="json"),
+                            memory_updates={
+                                "planning_runs": [ai_result.planning_run_id],
+                                "notes": [f"ai_hypotheses_synced={len(synced)}"],
+                                "ai_planning_runs": memory["ai_planning_runs"],
+                                "last_ai_candidate_count": memory["last_ai_candidate_count"],
+                            },
+                        )
+                    except Exception as exc:
+                        memory["ai_planning_runs"] = _memory_int(memory, "ai_planning_runs") + 1
+                        memory["last_ai_candidate_count"] = _memory_int(memory, "last_deterministic_candidate_count")
+                        recorder.append_step(
+                            kind=OrchestrationStepKind.AI_PLANNER,
+                            status=OrchestrationStepStatus.FAILED,
+                            title="Run AI-assisted planner",
+                            detail=f"AI planner failed and the session will continue with deterministic logic: {exc}",
+                            payload={"error": str(exc), "provider_key": payload.ai_provider_key},
+                            memory_updates={
+                                "notes": [f"ai_planner_failed={exc}"],
+                                "ai_planning_runs": memory["ai_planning_runs"],
+                                "last_ai_candidate_count": memory["last_ai_candidate_count"],
+                            },
+                        )
+                        memory = self._refresh_memory(scan_id, memory)
                     continue
 
                 if next_kind == OrchestrationStepKind.VERIFIER_CYCLE:

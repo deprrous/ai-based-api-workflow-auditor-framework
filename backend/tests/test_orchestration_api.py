@@ -133,3 +133,47 @@ def test_orchestration_session_runs_planners_and_verifier_cycles(client):
     assert hypothesis_detail_response.status_code == 200
     hypothesis_detail = hypothesis_detail_response.json()
     assert hypothesis_detail["selected_verifier_strategy"]
+
+
+def test_orchestration_survives_ai_planner_failure_and_continues(client, monkeypatch):
+    create_response = client.post(
+        "/api/v1/scans",
+        json={"name": "Autonomous AI Failure Scan", "target": "qa", "notes": "autonomous-ai-failure"},
+    )
+    assert create_response.status_code == 202
+    scan_id = create_response.json()["run"]["id"]
+
+    _post_proxy_event(client, scan_id, request_id="evt-1", fingerprint="fp-projects", method="GET", path="/v1/projects")
+    _post_proxy_event(client, scan_id, request_id="evt-2", fingerprint="fp-members", method="POST", path="/v1/projects/123/members")
+    _post_proxy_event(client, scan_id, request_id="evt-3", fingerprint="fp-delete", method="DELETE", path="/v1/projects/123")
+
+    from api.services import planner_service as planner_module
+
+    original = planner_module.planner_service.run_ai_workflow_planner
+
+    def fail_once(scan_id_arg, payload):
+        raise RuntimeError("rate limited by provider")
+
+    monkeypatch.setattr(planner_module.planner_service, "run_ai_workflow_planner", fail_once)
+
+    response = client.post(
+        f"/api/v1/scans/{scan_id}/orchestration/start",
+        headers={"X-Auditor-Admin-Token": "test-admin-token"},
+        json={
+            "use_ai_planner": True,
+            "ai_provider_key": "mock",
+            "max_verifier_cycles": 3,
+            "ai_candidate_limit": 5,
+            "ai_min_priority_score": 50,
+        },
+    )
+
+    assert response.status_code == 200
+    session = response.json()
+    assert session["status"] == "completed"
+    assert session["completed_verifier_cycles"] >= 1
+    ai_steps = [step for step in session["steps"] if step["kind"] == "ai_planner"]
+    assert ai_steps
+    assert ai_steps[0]["status"] == "failed"
+
+    monkeypatch.setattr(planner_module.planner_service, "run_ai_workflow_planner", original)
