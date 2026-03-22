@@ -123,6 +123,8 @@ The backend also now supports a provider-auth abstraction for AI connectivity wi
 
 Provider auth is stored separately from provider config, credentials are encrypted at rest, and normal API reads return only redacted summaries.
 
+For OpenAI specifically, browser auth now follows the ChatGPT Plus/Pro-to-Codex backend pattern instead of pretending to be standard OpenAI Platform API-key auth.
+
 ## Automatic verifier runner
 
 The backend can also process queued verifier jobs automatically in the API process for development.

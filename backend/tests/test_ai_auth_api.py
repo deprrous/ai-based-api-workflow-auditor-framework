@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from api.services import ai_auth_service as ai_auth_module
+
 
 def test_provider_catalog_exposes_auth_methods(client):
     response = client.get("/api/v1/ai/providers/catalog")
@@ -68,7 +70,7 @@ def test_create_provider_config_and_api_key_auth_flow(client):
     assert any(item["id"] == config_id for item in list_response.json())
 
 
-def test_google_cloud_credentials_and_oauth_scaffold(client):
+def test_google_cloud_credentials_and_openai_oauth_flow(client, monkeypatch):
     create_response = client.post(
         "/api/v1/ai/providers/configs",
         headers={"X-Auditor-Admin-Token": "test-admin-token"},
@@ -120,7 +122,20 @@ def test_google_cloud_credentials_and_oauth_scaffold(client):
     assert authorize_response.status_code == 200
     authorization = authorize_response.json()
     assert authorization["state"]
-    assert authorization["authorization_url"]
+    assert authorization["authorization_url"].startswith("https://auth.openai.com/oauth/authorize")
+
+    def fake_exchange(*, code: str, verifier: str, redirect_uri: str):
+        assert code == "test-oauth-code"
+        assert verifier
+        assert redirect_uri.endswith("/openai/oauth/callback")
+        return {
+            "access_token": "access.jwt.token",
+            "refresh_token": "refresh-token",
+            "expires_at": 32503680000,
+            "account_id": "acct_demo123",
+        }
+
+    monkeypatch.setattr(ai_auth_module, "exchange_openai_authorization_code", fake_exchange)
 
     callback_response = client.get(
         f"/api/v1/ai/providers/openai/oauth/callback?state={authorization['state']}&code=test-oauth-code&account_label=Plus Account"
@@ -129,3 +144,10 @@ def test_google_cloud_credentials_and_oauth_scaffold(client):
     callback_config = callback_response.json()
     assert callback_config["auth_method"] == "oauth_browser"
     assert callback_config["redacted_summary"]["account_label"] == "Plus Account"
+
+    validate_response = client.post(
+        f"/api/v1/ai/providers/configs/{openai_config_id}/validate",
+        headers={"X-Auditor-Admin-Token": "test-admin-token"},
+    )
+    assert validate_response.status_code == 200
+    assert validate_response.json()["status"] == "valid"

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import secrets
 from uuid import uuid4
+
+import httpx
 
 from api.app.config import get_settings
 from api.app.database import session_scope
@@ -20,6 +25,12 @@ from api.schemas.ai import (
 from api.services.secret_service import secret_service
 from orchestrator.providers.registry import get_provider_catalog
 
+OPENAI_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+OPENAI_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
+OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
+OPENAI_OAUTH_SCOPE = "openid profile email offline_access"
+OPENAI_AUTH_CLAIM = "https://api.openai.com/auth"
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -27,6 +38,103 @@ def _utc_now() -> datetime:
 
 def _coerce_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _pkce_pair() -> tuple[str, str]:
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("utf-8")).digest()).decode("ascii").rstrip("=")
+    return verifier, challenge
+
+
+def _decode_openai_account_id(access_token: str) -> str | None:
+    try:
+        parts = access_token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8")
+        parsed = json.loads(decoded)
+        auth_block = parsed.get(OPENAI_AUTH_CLAIM, {})
+        if isinstance(auth_block, dict):
+            account_id = auth_block.get("chatgpt_account_id")
+            return str(account_id) if account_id else None
+    except Exception:
+        return None
+    return None
+
+
+def build_openai_authorization_url(*, redirect_uri: str, state: str, code_challenge: str) -> str:
+    params = {
+        "response_type": "code",
+        "client_id": OPENAI_OAUTH_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "scope": OPENAI_OAUTH_SCOPE,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
+        "originator": "codex_cli_rs",
+    }
+    return f"{OPENAI_AUTHORIZE_URL}?{httpx.QueryParams(params)}"
+
+
+def exchange_openai_authorization_code(*, code: str, verifier: str, redirect_uri: str) -> dict[str, object] | None:
+    response = httpx.post(
+        OPENAI_TOKEN_URL,
+        data={
+            "grant_type": "authorization_code",
+            "client_id": OPENAI_OAUTH_CLIENT_ID,
+            "code": code,
+            "code_verifier": verifier,
+            "redirect_uri": redirect_uri,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=20.0,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    access_token = payload.get("access_token")
+    refresh_token = payload.get("refresh_token")
+    expires_in = payload.get("expires_in")
+    if not access_token or not refresh_token or not isinstance(expires_in, int):
+        return None
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at": int((_utc_now() + timedelta(seconds=expires_in)).timestamp()),
+        "account_id": _decode_openai_account_id(str(access_token)),
+    }
+
+
+def refresh_openai_oauth_secret(secret: dict[str, object]) -> dict[str, object] | None:
+    refresh_token = str(secret.get("refresh_token") or "")
+    if not refresh_token:
+        return None
+    response = httpx.post(
+        OPENAI_TOKEN_URL,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": OPENAI_OAUTH_CLIENT_ID,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=20.0,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    access_token = payload.get("access_token")
+    new_refresh_token = payload.get("refresh_token") or refresh_token
+    expires_in = payload.get("expires_in")
+    if not access_token or not isinstance(expires_in, int):
+        return None
+    return {
+        **secret,
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
+        "expires_at": int((_utc_now() + timedelta(seconds=expires_in)).timestamp()),
+        "account_id": _decode_openai_account_id(str(access_token)) or secret.get("account_id"),
+    }
 
 
 def _catalog_map() -> dict[str, object]:
@@ -38,6 +146,13 @@ def _provider_descriptor(provider_key: str):
     if descriptor is None:
         raise ValueError(f"Unknown AI provider: {provider_key}")
     return descriptor
+
+
+def _oauth_expired(secret: dict[str, object]) -> bool:
+    expires_at = secret.get("expires_at")
+    if not isinstance(expires_at, int):
+        return True
+    return expires_at <= int(_utc_now().timestamp())
 
 
 def _redact_secret(auth_method: AiAuthMethod, secret: dict[str, object]) -> dict[str, object]:
@@ -112,8 +227,8 @@ class AiAuthService:
             record = AiProviderConfigRecord(
                 id=f"aip-{uuid4().hex[:12]}",
                 provider_key=payload.provider_key,
-                provider_kind=descriptor.kind.value,
-                display_name=payload.display_name or descriptor.display_name,
+                provider_kind=getattr(descriptor, "kind").value,
+                display_name=payload.display_name or getattr(descriptor, "display_name"),
                 enabled=payload.enabled,
                 is_default=payload.is_default,
                 default_model=payload.default_model,
@@ -133,7 +248,7 @@ class AiAuthService:
                 return None
 
             descriptor = _provider_descriptor(config.provider_key)
-            supported = {method.method for method in descriptor.auth_methods}
+            supported = {method.method for method in getattr(descriptor, "auth_methods")}
             if auth_method not in supported:
                 raise ValueError(f"Provider {config.provider_key} does not support auth method {auth_method.value}")
 
@@ -192,9 +307,24 @@ class AiAuthService:
             elif auth_record.auth_method == AiAuthMethod.CLOUD_CREDENTIALS.value and not (secret.get("project_id") or secret.get("credentials_json")):
                 status = AiProviderAuthStatus.INVALID
                 message = "Cloud credential payload is missing project_id or credentials_json."
-            elif auth_record.auth_method == AiAuthMethod.OAUTH_BROWSER.value and not (secret.get("oauth_code") or secret.get("access_token") or secret.get("account_label")):
-                status = AiProviderAuthStatus.INVALID
-                message = "OAuth/browser auth payload is incomplete."
+            elif auth_record.auth_method == AiAuthMethod.OAUTH_BROWSER.value:
+                if config.provider_key == "openai":
+                    if not (secret.get("access_token") and secret.get("refresh_token") and secret.get("account_id")):
+                        status = AiProviderAuthStatus.INVALID
+                        message = "OpenAI browser auth is missing access token, refresh token, or account id."
+                    elif _oauth_expired(secret):
+                        refreshed = refresh_openai_oauth_secret(secret)
+                        if refreshed is None:
+                            status = AiProviderAuthStatus.EXPIRED
+                            message = "OpenAI browser auth token expired and refresh failed."
+                        else:
+                            secret = refreshed
+                            auth_record.encrypted_secret_json = secret_service.encrypt_json(secret)
+                            auth_record.redacted_summary_json = _redact_secret(AiAuthMethod.OAUTH_BROWSER, secret)
+                            message = "OpenAI browser auth refreshed successfully."
+                elif not (secret.get("oauth_code") or secret.get("access_token") or secret.get("account_label")):
+                    status = AiProviderAuthStatus.INVALID
+                    message = "OAuth/browser auth payload is incomplete."
 
             auth_record.status = status.value
             auth_record.validated_at = _utc_now()
@@ -233,7 +363,7 @@ class AiAuthService:
             if config is None:
                 return None
             state = secrets.token_urlsafe(24)
-            pkce = secrets.token_urlsafe(32)
+            pkce, challenge = _pkce_pair()
             callback_url = f"{get_settings().ai_oauth_redirect_base_url.rstrip('/')}/{config.provider_key}/oauth/callback"
             record = AiProviderOAuthStateRecord(
                 id=f"oauth-{uuid4().hex[:12]}",
@@ -247,7 +377,14 @@ class AiAuthService:
                 created_at=_utc_now(),
             )
             repository.add_oauth_state(record)
-            authorization_url = f"{callback_url}?state={state}&provider={config.provider_key}"
+            if config.provider_key == "openai":
+                authorization_url = build_openai_authorization_url(
+                    redirect_uri=callback_url,
+                    state=state,
+                    code_challenge=challenge,
+                )
+            else:
+                authorization_url = f"{callback_url}?state={state}&provider={config.provider_key}"
             return AiOAuthAuthorizationResponse(
                 provider_key=config.provider_key,
                 config_id=config.id,
@@ -273,10 +410,24 @@ class AiAuthService:
             oauth_state.used_at = _utc_now()
             auth_record = repository.get_auth_record(config.id, AiAuthMethod.OAUTH_BROWSER.value)
             now = _utc_now()
-            secret = {
-                "oauth_code": code,
-                "account_label": account_label or f"{provider_key}-browser-account",
-            }
+            if provider_key == "openai":
+                exchanged = exchange_openai_authorization_code(
+                    code=code,
+                    verifier=oauth_state.pkce_verifier,
+                    redirect_uri=oauth_state.redirect_uri,
+                )
+                if exchanged is None:
+                    return None
+                secret: dict[str, object] = {
+                    **exchanged,
+                    "account_label": account_label or "ChatGPT Plus/Pro",
+                    "model": config.default_model or "gpt-5.1",
+                }
+            else:
+                secret = {
+                    "oauth_code": code,
+                    "account_label": account_label or f"{provider_key}-browser-account",
+                }
             encrypted_secret = secret_service.encrypt_json(secret)
             redacted_summary = _redact_secret(AiAuthMethod.OAUTH_BROWSER, secret)
             if auth_record is None:
@@ -311,6 +462,15 @@ class AiAuthService:
                 return None
             auth_record = next(iter(repository.list_auth_records(config.id)), None)
             secret = secret_service.decrypt_json(auth_record.encrypted_secret_json) if auth_record else {}
+            if auth_record and auth_record.auth_method == AiAuthMethod.OAUTH_BROWSER.value and config.provider_key == "openai" and _oauth_expired(secret):
+                refreshed = refresh_openai_oauth_secret(secret)
+                if refreshed is not None:
+                    secret = refreshed
+                    auth_record.encrypted_secret_json = secret_service.encrypt_json(secret)
+                    auth_record.redacted_summary_json = _redact_secret(AiAuthMethod.OAUTH_BROWSER, secret)
+                    auth_record.status = AiProviderAuthStatus.VALID.value
+                    auth_record.validated_at = _utc_now()
+                    auth_record.updated_at = auth_record.validated_at
             return {
                 "config": config,
                 "auth_record": auth_record,

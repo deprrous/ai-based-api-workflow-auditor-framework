@@ -4,6 +4,7 @@ import json
 
 from api.schemas.ai import AiHypothesisSelectionRequest, AiNextActionRequest, AiPlanningCandidate
 from api.services.ai_provider_service import ai_provider_service
+from orchestrator.providers.openai_codex_oauth_planner import OpenAiCodexOAuthPlanningProvider
 from orchestrator.providers.openai_compatible_planner import OpenAiCompatiblePlanningProvider
 
 
@@ -139,3 +140,49 @@ def test_mock_provider_can_select_hypothesis() -> None:
     assert provider_key == "mock"
     assert decision.selected_hypothesis_id == "hyp-2"
     assert decision.selected_payload_variant_id == "destructive-confirmation-bypass"
+
+
+def test_openai_codex_oauth_planner_parses_sse_payload() -> None:
+    def transport(*, access_token, account_id, payload):
+        assert access_token == "access-token"
+        assert account_id == "acct-demo"
+        assert payload["model"] == "gpt-5.1"
+        return {
+            "sse": "\n".join(
+                [
+                    'data: {"type":"response.output_text.delta","delta":"ignored"}',
+                    'data: {"type":"response.completed","response":{"output":"{\\"proposals\\":[{\\"path_id\\":\\"planned-path-1\\",\\"include_in_plan\\":true,\\"priority_score\\":77,\\"recommended_severity\\":\\"high\\",\\"suggested_rationale\\":\\"OAuth planner selected the path.\\",\\"explanation\\":\\"Codex backend responded successfully.\\",\\"tags\\":[\\"oauth\\"]}] }"}}',
+                ]
+            )
+        }
+
+    provider = OpenAiCodexOAuthPlanningProvider(
+        access_token="access-token",
+        refresh_token="refresh-token",
+        account_id="acct-demo",
+        model="gpt-5.1",
+        transport=transport,
+    )
+
+    proposals = provider.plan(
+        [
+            AiPlanningCandidate(
+                path_id="planned-path-1",
+                title="Delete path",
+                severity="high",
+                vulnerability_class="unsafe_destructive_action",
+                confidence=88,
+                matched_rule="unsafe_destructive_action",
+                verifier_strategy="destructive_action_replay",
+                rationale="Destructive endpoint reached.",
+                step_count=3,
+                matched_signals=["destructive-action"],
+                workflow_node_ids=["a", "b", "c"],
+            )
+        ],
+        min_priority_score=50,
+    )
+
+    assert len(proposals) == 1
+    assert proposals[0].priority_score == 77
+    assert proposals[0].tags == ["oauth"]

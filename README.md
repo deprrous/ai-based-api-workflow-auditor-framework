@@ -123,6 +123,8 @@ That means the framework can be configured to use AI providers through:
 - browser/OAuth auth scaffolding where supported
 - cloud credentials for providers like Google/Gemini
 
+OpenAI now has a provider-specific browser-auth path intended for personal development use with a ChatGPT Plus/Pro account, separate from standard OpenAI API-key auth.
+
 The deterministic backend planner now has explicit vulnerability coverage rules for:
 
 - BOLA / IDOR

@@ -6,6 +6,7 @@ from orchestrator.providers.base import AiPlanningProvider, auth_descriptor, bui
 from orchestrator.providers.anthropic_planner import AnthropicPlanningProvider
 from orchestrator.providers.google_planner import GooglePlanningProvider
 from orchestrator.providers.mock_planner import MockPlanningProvider
+from orchestrator.providers.openai_codex_oauth_planner import OpenAiCodexOAuthPlanningProvider
 from orchestrator.providers.openai_compatible import OpenAiCompatibleProvider
 from orchestrator.providers.openai_compatible_planner import OpenAiCompatiblePlanningProvider
 from orchestrator.providers.openai_planner import OpenAiPlanningProvider
@@ -99,10 +100,12 @@ def get_provider_catalog() -> AiProviderCatalog:
     return AiProviderCatalog(version="v1", providers=providers)
 def build_planning_provider(*, settings: Settings, provider_key: str | None = None, runtime_auth: dict[str, object] | None = None) -> AiPlanningProvider:
     selected = (provider_key or settings.ai_default_provider).strip().lower()
+    secret = runtime_auth.get("secret", {}) if runtime_auth else {}
+    auth_record = runtime_auth.get("auth_record") if runtime_auth else None
+    auth_method = getattr(auth_record, "auth_method", None)
     if selected == "mock":
         return MockPlanningProvider()
     if selected == "openai-compatible":
-        secret = runtime_auth.get("secret", {}) if runtime_auth else {}
         return OpenAiCompatiblePlanningProvider(
             base_url=str(secret.get("base_url") or settings.ai_openai_compatible_base_url or ""),
             api_key=str(secret.get("api_key") or settings.ai_openai_compatible_api_key or ""),
@@ -110,7 +113,13 @@ def build_planning_provider(*, settings: Settings, provider_key: str | None = No
             verify_tls=bool(secret.get("verify_tls", settings.ai_openai_compatible_verify_tls)),
         )
     if selected == "openai":
-        secret = runtime_auth.get("secret", {}) if runtime_auth else {}
+        if auth_method == AiAuthMethod.OAUTH_BROWSER.value:
+            return OpenAiCodexOAuthPlanningProvider(
+                access_token=str(secret.get("access_token") or ""),
+                refresh_token=str(secret.get("refresh_token") or ""),
+                account_id=str(secret.get("account_id") or ""),
+                model=str(secret.get("model") or "gpt-5.1"),
+            )
         return OpenAiPlanningProvider(
             base_url=str(secret.get("base_url") or "https://api.openai.com/v1"),
             api_key=str(secret.get("api_key") or ""),
@@ -118,13 +127,11 @@ def build_planning_provider(*, settings: Settings, provider_key: str | None = No
             verify_tls=bool(secret.get("verify_tls", True)),
         )
     if selected == "anthropic":
-        secret = runtime_auth.get("secret", {}) if runtime_auth else {}
         return AnthropicPlanningProvider(
             api_key=str(secret.get("api_key") or ""),
             model=str(secret.get("model") or ""),
         )
     if selected == "google":
-        secret = runtime_auth.get("secret", {}) if runtime_auth else {}
         return GooglePlanningProvider(
             model=str(secret.get("model") or ""),
             api_key=str(secret.get("api_key") or "") or None,
