@@ -45,12 +45,19 @@ def _stable_suffix(value: str, *, length: int = 12) -> str:
 
 
 def _category_from_job(job: VerifierJobDetail) -> str:
-    lowered = f"{job.title} {job.rationale}".lower()
-    if "delete" in lowered or "admin" in lowered or "role" in lowered:
-        return "bfla"
-    if "key" in lowered or "secret" in lowered or "tenant" in lowered:
-        return "tenant_isolation"
-    return "business_logic"
+    mapping = {
+        "bola_idor": "bola",
+        "bfla": "bfla",
+        "tenant_isolation": "tenant_isolation",
+        "mass_assignment": "mass_assignment",
+        "excessive_data_exposure": "excessive_data_exposure",
+        "unsafe_destructive_action": "business_logic",
+        "sqli": "sqli",
+        "ssrf": "ssrf",
+        "stored_xss": "stored_xss",
+        "reflected_xss": "reflected_xss",
+    }
+    return mapping.get(str(job.payload.vulnerability_class), "business_logic")
 
 
 def _endpoint_from_job(job: VerifierJobDetail) -> str | None:
